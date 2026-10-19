@@ -7,7 +7,7 @@
 - Owner: Payment
 - Runtime: React 19 and Webpack 5
 - Data store: None
-- Depends on: eia-frontend-platform, eia-contracts, eia-gateway
+- Depends on: eia-frontend/packages, eia-contracts, eia-platform/gateway
 
 ## Purpose
 

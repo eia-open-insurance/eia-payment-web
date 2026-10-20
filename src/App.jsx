@@ -3,6 +3,7 @@ import './ui.css';
 import './ui-overrides.css';
 import EntityPicker from './EntityPicker.jsx';
 import { navigate, recordHref } from './navigation.js';
+import { partyEndpoint, partyRecordLabel } from './party.js';
 
 const TENANT = '11111111-1111-7111-8111-111111111111';
 const PARTY_SEARCH_ENDPOINT = '/api/v1/parties/search';
@@ -232,13 +233,14 @@ function PartyLink({ partyId, label, testId, title }) {
   );
 }
 
-function paymentMatchesFilter(payment, needle, parties) {
+function paymentMatchesFilter(payment, needle, parties, details = {}) {
   const party = payment.payeePartyId ? parties[payment.payeePartyId] : null;
   return [
     payment.paymentNumber,
     payment.paymentType,
     humanize(payment.paymentType),
     payment.payeePartyId,
+    details[payment.payeePartyId],
     party?.label,
     party?.secondary,
     payment.status
@@ -253,6 +255,7 @@ export default function App() {
   const [showCreate, setShowCreate] = useState(false);
   const [queueFilter, setQueueFilter] = useState('');
   const [payeeParties, setPayeeParties] = useState({});
+  const [partyDetails, setPartyDetails] = useState({});
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(true);
@@ -346,6 +349,35 @@ export default function App() {
       alive = false;
     };
   }, [selected?.id, detailNonce]);
+
+  const selectedPayeePartyId = selected?.payeePartyId || '';
+
+  /**
+   * Resolves the payee through the Party API once the payment record is
+   * already rendered. A 404 or an unreachable Party service never blocks the
+   * record: every cross-link falls back to the short UUID.
+   */
+  useEffect(() => {
+    if (!selectedPayeePartyId) return undefined;
+    let alive = true;
+    api(partyEndpoint(selectedPayeePartyId))
+      .then(({ response, body }) => {
+        if (!alive || !response.ok || !body) return;
+        const label = partyRecordLabel(body);
+        if (!label) return;
+        setPartyDetails((current) => (
+          current[selectedPayeePartyId] === label
+            ? current
+            : { ...current, [selectedPayeePartyId]: label }
+        ));
+      })
+      .catch(() => {
+        // Party lookup is an enhancement; the payment still renders.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [selectedPayeePartyId]);
 
   useEffect(() => {
     if (!showCreate) return undefined;
@@ -547,11 +579,16 @@ export default function App() {
   const currentIndex = selected ? lifecycleIndex(selected.status) : -1;
   const selectedPayeeLabel = partyLabel(payeeParties, selected?.payeePartyId);
   const selectedPayeeSecondary = partySecondary(payeeParties, selected?.payeePartyId);
+  const selectedPayeeText = (selected?.payeePartyId && partyDetails[selected.payeePartyId])
+    || selectedPayeeLabel
+    || '';
   const formPayeeSecondary = partySecondary(payeeParties, form.payeePartyId);
   const normalizedQueueFilter = queueFilter.trim().toLowerCase();
   const filterActive = normalizedQueueFilter.length > 0;
   const visiblePayments = filterActive
-    ? payments.filter((payment) => paymentMatchesFilter(payment, normalizedQueueFilter, payeeParties))
+    ? payments.filter((payment) => (
+        paymentMatchesFilter(payment, normalizedQueueFilter, payeeParties, partyDetails)
+      ))
     : payments;
   const detailRows = selected
     ? [
@@ -655,7 +692,12 @@ export default function App() {
                     {humanize(payment.paymentType)} · {formatMoney(payment.amount, payment.currency)}
                   </span>
                   <span className="record-secondary">
-                    Payee {partyLabel(payeeParties, payment.payeePartyId) || shortId(payment.payeePartyId)} · {payment.paymentDate || '—'}
+                    Payee{' '}
+                    {partyDetails[payment.payeePartyId]
+                      || partyLabel(payeeParties, payment.payeePartyId)
+                      || shortId(payment.payeePartyId)}
+                    {' · '}
+                    {payment.paymentDate || '—'}
                   </span>
                   <span>
                     <span className={`eia-pill ${statusTone(payment.status)}`}>{payment.status}</span>
@@ -700,7 +742,7 @@ export default function App() {
                     {selected.payeePartyId ? (
                       <PartyLink
                         partyId={selected.payeePartyId}
-                        label={selectedPayeeLabel}
+                        label={selectedPayeeText}
                         testId="record-payee-link"
                       />
                     ) : '—'}
@@ -747,14 +789,14 @@ export default function App() {
                     {selected.payeePartyId ? (
                       <PartyLink
                         partyId={selected.payeePartyId}
-                        label={selectedPayeeLabel}
+                        label={selectedPayeeText}
                         testId="summary-payee-link"
                         title={selectedPayeeSecondary || `Open party ${selected.payeePartyId}`}
                       />
                     ) : '—'}
                   </div>
                   <div className="eia-metric-label">
-                    {selectedPayeeLabel ? 'party record' : 'party reference'}
+                    {selectedPayeeText ? 'party record' : 'party reference'}
                   </div>
                 </div>
                 <div className="eia-card">
@@ -805,7 +847,7 @@ export default function App() {
                             <>
                               <PartyLink
                                 partyId={selected.payeePartyId}
-                                label={selectedPayeeLabel}
+                                label={selectedPayeeText}
                                 testId="details-payee-link"
                               />
                               {selectedPayeeSecondary ? (
@@ -863,7 +905,7 @@ export default function App() {
                           data-testid="context-payee-link"
                           onClick={openLink}
                         >
-                          Payee party record
+                          Payee party record · {selectedPayeeText || shortId(selected.payeePartyId)}
                         </a>
                       )}
                     </div>
@@ -953,7 +995,7 @@ export default function App() {
                               {label === 'Payee party' && value ? (
                                 <PartyLink
                                   partyId={value}
-                                  label={selectedPayeeLabel}
+                                  label={selectedPayeeText}
                                   testId="detail-row-payee-link"
                                 />
                               ) : (value === null || value === undefined || value === '' ? '—' : value)}

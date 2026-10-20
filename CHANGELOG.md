@@ -16,3 +16,6 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   label and a cross-link to `/party?record=`.
 - Disbursement context panel explaining that the Payment API slice carries no
   source claim or policy reference and that approval gates execution.
+- Payee cross-link resolution through `GET /api/v1/parties/{id}`: the header,
+  summary payee card, Overview, and context panel show `name · party number`
+  link text with a short-UUID fallback, and a 404 never blocks the record.

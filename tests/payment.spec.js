@@ -40,6 +40,25 @@ async function json(route, status, body, headers = {}) {
   });
 }
 
+/**
+ * The workbench resolves the payee through GET /api/v1/parties/{id} on every
+ * selection. These scenarios assert the short-UUID fallback, so keep the Party
+ * API deterministic instead of depending on a local domain service.
+ */
+test.beforeEach(async ({ page }) => {
+  await page.route(/\/api\/v1\/parties\/[0-9a-f-]+$/i, async (route) => {
+    await route.fulfill({
+      status: 404,
+      contentType: 'application/problem+json',
+      body: JSON.stringify({
+        status: 404,
+        code: 'PARTY_NOT_FOUND',
+        message: 'Party was not found'
+      })
+    });
+  });
+});
+
 test('renders the payment record layout, summary grid and lifecycle tabs', async ({ page }) => {
   const first = payment();
   const second = payment({

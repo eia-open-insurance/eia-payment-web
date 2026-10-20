@@ -298,3 +298,81 @@ test('context panel explains the disbursement boundary and cross-links the payee
     `/party?record=${PAYEE_A}`
   );
 });
+
+test('resolves the payee name · party number in the header, summary, Overview, and context panel', async ({ page }) => {
+  const partyRequests = [];
+
+  await mockPayments(page, {
+    queue: [PAYMENT_A],
+    detail: { [PAYMENT_A.id]: PAYMENT_A }
+  });
+  await page.route(/\/api\/v1\/parties\/[0-9a-f-]+$/i, async (route) => {
+    const url = new URL(route.request().url());
+    partyRequests.push({
+      id: url.pathname.split('/').pop(),
+      tenant: route.request().headers()['x-eia-tenant']
+    });
+    await json(route, 200, {
+      id: PAYEE_A,
+      tenantId: TENANT,
+      partyNumber: 'PTY-000000001',
+      partyType: 'ORGANIZATION',
+      displayName: 'Acme Manufacturing',
+      legalName: 'Acme Manufacturing, Inc.',
+      status: 'ACTIVE'
+    });
+  });
+
+  await page.goto('/');
+
+  const label = 'Acme Manufacturing · PTY-000000001';
+  const href = `/party?record=${PAYEE_A}`;
+
+  await expect(page.getByTestId('record-payee-link')).toHaveText(label);
+  await expect(page.getByTestId('record-payee-link')).toHaveAttribute('href', href);
+  await expect(page.getByTestId('summary-payee-link')).toHaveText(label);
+  await expect(page.getByTestId('summary-payee-link')).toHaveAttribute('href', href);
+  await expect(page.getByTestId('details-payee-link')).toHaveText(label);
+  await expect(page.getByTestId('details-payee-link')).toHaveAttribute('href', href);
+  await expect(page.getByTestId('context-payee-link')).toContainText(label);
+  await expect(page.getByTestId('context-payee-link')).toHaveAttribute('href', href);
+
+  expect(partyRequests).toEqual([{ id: PAYEE_A, tenant: TENANT }]);
+});
+
+test('falls back to the short payee UUID when the Party API returns 404', async ({ page }) => {
+  await mockPayments(page, {
+    queue: [PAYMENT_A],
+    detail: { [PAYMENT_A.id]: PAYMENT_A }
+  });
+  await page.route(/\/api\/v1\/parties\/[0-9a-f-]+$/i, async (route) => {
+    await route.fulfill({
+      status: 404,
+      contentType: 'application/problem+json',
+      body: JSON.stringify({
+        status: 404,
+        code: 'PARTY_NOT_FOUND',
+        message: 'Party was not found'
+      })
+    });
+  });
+
+  await page.goto('/');
+
+  // The payment record is rendered before and independent of party resolution.
+  await expect(page.getByRole('heading', { name: PAYMENT_A.paymentNumber, level: 2 })).toBeVisible();
+
+  const short = '22222222…';
+  await expect(page.getByTestId('record-payee-link')).toHaveText(short);
+  await expect(page.getByTestId('summary-payee-link')).toHaveText(short);
+  await expect(page.getByTestId('details-payee-link')).toHaveText(short);
+  await expect(page.getByTestId('context-payee-link')).toContainText(short);
+  await expect(page.getByTestId('record-payee-link')).toHaveAttribute(
+    'href',
+    `/party?record=${PAYEE_A}`
+  );
+  await expect(page.getByTestId('context-payee-link')).toHaveAttribute(
+    'href',
+    `/party?record=${PAYEE_A}`
+  );
+});

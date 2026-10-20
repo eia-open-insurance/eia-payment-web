@@ -52,3 +52,30 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 - Playwright coverage for the aggregate path/limit/tenant header, newest-first
   ordering, payload summaries, the empty state, a contained 503, explicit
   refresh, and refetch when another payment is selected.
+- Payment **Allocations** tab: selecting it fetches
+  `GET /api/v1/payments/{paymentId}/allocations` with the tenant header and
+  shows the payment amount, allocated amount, unallocated balance, and
+  allocation count above a ledger of target type, linked target reference,
+  component, amount, and created timestamp. Target links route DIRECT_CLAIM to
+  `/direct-claims?record=`, ASSUMED_CLAIM to `/assumed-claims?record=`, and
+  POLICY to `/policy?record=`. A reference comes from the API when supplied,
+  otherwise from the picker label or the owning vertical's predictive search,
+  and finally from the short UUID.
+- Add-allocation dialog: target-type select, EntityPicker over
+  `/api/v1/claims/search` (DIRECT book), `/api/v1/assumed-claims/search`
+  (ASSUMED book), and `/api/v1/policies/search` (DIRECT book), a component
+  select, and an amount defaulted to the unallocated balance. The amount must be
+  greater than 0 and no more than the unallocated balance. The POST body carries
+  `targetType`, `targetId`, `component`, and `amount`; the returned row is merged
+  into the ledger and the list is refetched. A 409 keeps the dialog open with the
+  entered values and offers **Reload allocations**.
+- Loading, empty, and error states stay inside the Allocations tab, so a slow or
+  failing allocation API never blocks the payment record; allocating never
+  changes the payment amount.
+- Playwright coverage for the allocation query and tenant header, summary and
+  target links, predictive label resolution with a short-id fallback, all three
+  picker endpoints and book headers, the POST payload, over-allocation and
+  non-positive amount validation, the empty state, a contained load error with
+  retry, the 409 conflict reload, and the loading state.
+- Shared `api.js`/`format.js` helpers now carry the tenant-aware JSON transport
+  and money/short-id formatting used by the workbench and its tabs.

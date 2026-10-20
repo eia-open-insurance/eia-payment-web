@@ -122,8 +122,9 @@ test('renders the payment record layout, summary grid and lifecycle tabs', async
   await expect(page.getByTestId('summary-payee')).toHaveText('22222222…');
   await expect(page.getByTestId('summary-date')).toHaveText('2026-10-19');
 
-  await expect(page.getByRole('tab')).toHaveCount(4);
+  await expect(page.getByRole('tab')).toHaveCount(5);
   await expect(page.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: 'Allocations' })).toBeVisible();
   await expect(page.getByRole('tab', { name: 'Approval Path' })).toBeVisible();
   await expect(page.getByRole('tab', { name: 'Payment Details' })).toBeVisible();
   await expect(page.getByRole('tab', { name: 'Activity' })).toBeVisible();

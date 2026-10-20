@@ -1,7 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import './ui.css';
 import './ui-overrides.css';
+import AllocationsTab from './AllocationsTab.jsx';
 import EntityPicker from './EntityPicker.jsx';
+import { api, problemMessage } from './api.js';
+import { formatMoney, shortId } from './format.js';
 import { navigate, recordHref } from './navigation.js';
 import { partyEndpoint, partyRecordLabel } from './party.js';
 import {
@@ -34,7 +37,6 @@ import {
   payloadFacts
 } from './events.js';
 
-const TENANT = '11111111-1111-7111-8111-111111111111';
 const PARTY_SEARCH_ENDPOINT = '/api/v1/parties/search';
 const QUEUE_FILTER_PLACEHOLDER = 'Filter payments by number, type, payee, or status…';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -88,6 +90,7 @@ const LIFECYCLE_INDEX = {
 
 const TABS = [
   { id: 'overview', label: 'Overview' },
+  { id: 'allocations', label: 'Allocations' },
   { id: 'approval', label: 'Approval Path' },
   { id: 'details', label: 'Payment Details' },
   { id: 'activity', label: 'Activity' }
@@ -128,23 +131,6 @@ function initialForm(prefill = {}) {
   };
 }
 
-function formatMoney(amount, currency) {
-  if (amount === null || amount === undefined || amount === '') return '—';
-  const value = Number(amount);
-  if (!Number.isFinite(value) || !currency) return String(amount);
-  try {
-    return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(value);
-  } catch {
-    return `${amount} ${currency}`;
-  }
-}
-
-function shortId(value) {
-  if (!value) return '—';
-  const text = String(value);
-  return text.length > 8 ? `${text.slice(0, 8)}…` : text;
-}
-
 function humanize(value) {
   if (!value) return '—';
   return String(value).replace(/_/g, ' ');
@@ -172,34 +158,6 @@ function executionLabel(status) {
     return 'Issued to SAP/bank';
   }
   return 'No execution action recorded';
-}
-
-function readJson(response) {
-  return response.json().catch(() => null);
-}
-
-function problemMessage(body, fallback) {
-  if (!body) return fallback;
-  const summary = body.message || body.detail || body.title || fallback;
-  const code = typeof body.code === 'string' && body.code ? `${body.code}: ` : '';
-  const issues = Array.isArray(body.details) ? body.details : Array.isArray(body.errors) ? body.errors : [];
-  if (issues.length === 0) return `${code}${summary}`;
-  const details = issues
-    .map((issue) => `${issue.field || 'request'}: ${issue.message || issue.code || 'is invalid'}`)
-    .join('; ');
-  return `${code}${summary} (${details})`;
-}
-
-async function api(path, options = {}) {
-  const headers = { 'X-EIA-Tenant': TENANT };
-  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
-  const response = await fetch(path, {
-    method: options.method || 'GET',
-    headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body)
-  });
-  const body = await readJson(response);
-  return { response, body };
 }
 
 /**
@@ -1294,6 +1252,15 @@ export default function App() {
                       </div>
                     )}
                   </section>
+                </section>
+              )}
+
+              {tab === 'allocations' && (
+                <section id="panel-allocations" role="tabpanel" aria-labelledby="tab-allocations">
+                  <AllocationsTab
+                    payment={selected}
+                    onChanged={() => setDetailNonce((value) => value + 1)}
+                  />
                 </section>
               )}
 

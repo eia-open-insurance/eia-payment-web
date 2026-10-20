@@ -4,6 +4,15 @@ import './ui-overrides.css';
 import EntityPicker from './EntityPicker.jsx';
 import { navigate, recordHref } from './navigation.js';
 import { partyEndpoint, partyRecordLabel } from './party.js';
+import {
+  SOURCE_REFERENCE_MAX_LENGTH,
+  SOURCE_TYPES,
+  hasSource,
+  normalizeSourceType,
+  sourceHref,
+  sourceLinkLabel,
+  sourceTypeLabel
+} from './source.js';
 
 const TENANT = '11111111-1111-7111-8111-111111111111';
 const PARTY_SEARCH_ENDPOINT = '/api/v1/parties/search';
@@ -84,13 +93,17 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function initialForm() {
+function initialForm(prefill = {}) {
   return {
     paymentType: 'INDEMNITY',
-    amount: '125000.00',
-    currency: 'USD',
-    payeePartyId: '',
-    paymentDate: today()
+    amount: prefill.amount || '125000.00',
+    currency: prefill.currency || 'USD',
+    payeePartyId: prefill.payeePartyId || '',
+    paymentDate: today(),
+    sourceType: prefill.sourceType || '',
+    sourceId: prefill.sourceId || '',
+    sourceReference: prefill.sourceReference || '',
+    sourceFromUrl: Boolean(prefill.sourceFromUrl)
   };
 }
 
@@ -179,12 +192,36 @@ function onPaymentRoute() {
   return path === '' || path === '/index.html' || path.endsWith('/payment');
 }
 
+/**
+ * Reads the optional source-record hand-off from the URL. Unknown source types
+ * are dropped rather than carried into a payload the Payment API would reject.
+ */
+function readSourcePrefill(params) {
+  const sourceType = normalizeSourceType(params.get('sourceType'));
+  const sourceId = (params.get('sourceId') || '').trim();
+  const sourceReference = (params.get('sourceReference') || '').trim();
+  if (!sourceType && !sourceId && !sourceReference) {
+    return { sourceType: '', sourceId: '', sourceReference: '', sourceFromUrl: false };
+  }
+  return { sourceType, sourceId, sourceReference, sourceFromUrl: true };
+}
+
+function readCreatePrefill(params) {
+  return {
+    amount: (params.get('amount') || '').trim(),
+    currency: (params.get('currency') || '').trim().toUpperCase(),
+    payeePartyId: (params.get('payeePartyId') || '').trim(),
+    ...readSourcePrefill(params)
+  };
+}
+
 function readUrlState() {
-  if (typeof window === 'undefined') return { record: '', create: false };
+  if (typeof window === 'undefined') return { record: '', create: false, prefill: {} };
   const params = new URLSearchParams(window.location.search);
   return {
     record: (params.get('record') || '').trim(),
-    create: params.get('new') === '1'
+    create: params.get('new') === '1',
+    prefill: readCreatePrefill(params)
   };
 }
 
@@ -243,8 +280,50 @@ function paymentMatchesFilter(payment, needle, parties, details = {}) {
     details[payment.payeePartyId],
     party?.label,
     party?.secondary,
-    payment.status
+    payment.status,
+    payment.sourceType,
+    humanize(payment.sourceType),
+    payment.sourceId,
+    payment.sourceReference
   ].some((value) => String(value || '').toLowerCase().includes(needle));
+}
+
+/**
+ * Mirrors the Payment API source-linkage rules so a hand-off fails fast in the
+ * dialog: a classified source needs both a type and a UUID; OTHER may carry
+ * only its human reference.
+ */
+function validateSourceFields(form) {
+  const issues = [];
+  const sourceType = normalizeSourceType(form.sourceType);
+  const sourceId = form.sourceId.trim();
+  const sourceReference = form.sourceReference.trim();
+  if (!sourceType && sourceId) {
+    issues.push('Select a source type before entering a source record id.');
+  }
+  if (sourceType && sourceType !== 'OTHER' && !sourceId) {
+    issues.push(`Enter the source record id for the ${sourceTypeLabel(sourceType)} source.`);
+  }
+  if (sourceId && !UUID_PATTERN.test(sourceId)) {
+    issues.push('Source record id must be a UUID.');
+  }
+  if (sourceReference.length > SOURCE_REFERENCE_MAX_LENGTH) {
+    issues.push(`Source reference must be ${SOURCE_REFERENCE_MAX_LENGTH} characters or fewer.`);
+  }
+  return issues;
+}
+
+/** Adds the source pair to a create payload only when one was supplied. */
+function sourcePayload(form) {
+  const sourceType = normalizeSourceType(form.sourceType);
+  const sourceId = form.sourceId.trim();
+  const sourceReference = form.sourceReference.trim();
+  if (!sourceType && !sourceId && !sourceReference) return null;
+  const payload = {};
+  if (sourceType) payload.sourceType = sourceType;
+  if (sourceId) payload.sourceId = sourceId;
+  if (sourceReference) payload.sourceReference = sourceReference;
+  return payload;
 }
 
 export default function App() {
@@ -379,6 +458,35 @@ export default function App() {
     };
   }, [selectedPayeePartyId]);
 
+  const createPayeePartyId = showCreate ? form.payeePartyId : '';
+
+  /**
+   * A hand-off can prefill payeePartyId without a label. Resolve it through the
+   * Party API so the picker shows the party record instead of a bare UUID; if
+   * resolution fails the UUID remains usable.
+   */
+  useEffect(() => {
+    if (!createPayeePartyId || partyLabel(payeeParties, createPayeePartyId)) return undefined;
+    let alive = true;
+    api(partyEndpoint(createPayeePartyId))
+      .then(({ response, body }) => {
+        if (!alive || !response.ok || !body) return;
+        const label = partyRecordLabel(body);
+        if (!label) return;
+        setPayeeParties((current) => (
+          current[createPayeePartyId]
+            ? current
+            : { ...current, [createPayeePartyId]: { label, secondary: '' } }
+        ));
+      })
+      .catch(() => {
+        // The picker keeps the raw UUID when the Party API cannot resolve it.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [createPayeePartyId, payeeParties]);
+
   useEffect(() => {
     if (!showCreate) return undefined;
     const onKeyDown = (event) => {
@@ -394,6 +502,15 @@ export default function App() {
 
   function update(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function clearSource() {
+    setForm((current) => ({
+      ...current,
+      sourceType: '',
+      sourceId: '',
+      sourceReference: ''
+    }));
   }
 
   function rememberParty(item) {
@@ -434,17 +551,18 @@ export default function App() {
   }
 
   /**
-   * Applies ?record= and ?new=1. A record already in the queue is selected
-   * immediately; otherwise the detail endpoint is queried and the payment is
-   * inserted at the top of the queue. Popstate re-runs the same logic.
+   * Applies ?record=, ?new=1, and the create hand-off prefill. A record already
+   * in the queue is selected immediately; otherwise the detail endpoint is
+   * queried and the payment is inserted at the top of the queue. Popstate
+   * re-runs the same logic.
    */
   async function applyUrlState(rows, { initial = false } = {}) {
     if (!onPaymentRoute()) return;
-    const { record, create } = readUrlState();
+    const { record, create, prefill } = readUrlState();
 
     if (create) {
       if (!showCreateRef.current) {
-        setForm(initialForm());
+        setForm(initialForm(prefill));
         setError('');
       }
       setShowCreate(true);
@@ -509,6 +627,11 @@ export default function App() {
   async function submit(event) {
     event.preventDefault();
     if (saving) return;
+    const sourceIssues = validateSourceFields(form);
+    if (sourceIssues.length > 0) {
+      setError(sourceIssues.join(' '));
+      return;
+    }
     if (!form.payeePartyId) {
       setError('Select a payee party before creating the payment.');
       return;
@@ -524,6 +647,8 @@ export default function App() {
         payeePartyId: form.payeePartyId.trim(),
         paymentDate: form.paymentDate
       };
+      const source = sourcePayload(form);
+      if (source) Object.assign(payload, source);
       const { response, body } = await api('/api/v1/payments', { method: 'POST', body: payload });
       if (!response.ok) {
         setError(problemMessage(body, `Create failed: ${response.status}`));
@@ -582,7 +707,18 @@ export default function App() {
   const selectedPayeeText = (selected?.payeePartyId && partyDetails[selected.payeePartyId])
     || selectedPayeeLabel
     || '';
+  const selectedSourceHref = selected ? sourceHref(selected) : '';
+  const selectedSourceReference = selected
+    ? selected.sourceReference || shortId(selected.sourceId)
+    : '';
   const formPayeeSecondary = partySecondary(payeeParties, form.payeePartyId);
+  const formSourceType = normalizeSourceType(form.sourceType);
+  const formSourceId = form.sourceId.trim();
+  const formSourceReference = form.sourceReference.trim();
+  const formHasSource = Boolean(formSourceType || formSourceId || formSourceReference);
+  const formSourceHref = sourceHref({ sourceType: formSourceType, sourceId: formSourceId });
+  const formSourceLabel = sourceTypeLabel(formSourceType)
+    || (formHasSource ? 'Other source' : '');
   const normalizedQueueFilter = queueFilter.trim().toLowerCase();
   const filterActive = normalizedQueueFilter.length > 0;
   const visiblePayments = filterActive
@@ -600,6 +736,9 @@ export default function App() {
         ['Amount', selected.amount],
         ['Currency', selected.currency],
         ['Payee party', selected.payeePartyId],
+        ['Source type', selected.sourceType],
+        ['Source reference', selected.sourceReference],
+        ['Source id', selected.sourceId],
         ['Payment date', selected.paymentDate],
         ['Version', selected.version],
         ['Created', selected.createdAt],
@@ -699,6 +838,15 @@ export default function App() {
                     {' · '}
                     {payment.paymentDate || '—'}
                   </span>
+                  {hasSource(payment) && (
+                    <span
+                      className="record-secondary"
+                      data-testid={`queue-source-${payment.id}`}
+                    >
+                      Source {payment.sourceReference || shortId(payment.sourceId)}
+                      {payment.sourceType ? ` · ${sourceTypeLabel(payment.sourceType)}` : ''}
+                    </span>
+                  )}
                   <span>
                     <span className={`eia-pill ${statusTone(payment.status)}`}>{payment.status}</span>
                   </span>
@@ -749,6 +897,23 @@ export default function App() {
                     {' · '}
                     Payment date {selected.paymentDate || '—'}
                   </p>
+                  {hasSource(selected) && (
+                    <p className="eia-record-subtitle" data-testid="record-source">
+                      Source{' '}
+                      {selectedSourceHref ? (
+                        <a
+                          href={selectedSourceHref}
+                          data-testid="record-source-link"
+                          onClick={openLink}
+                        >
+                          {selectedSourceReference || '—'}
+                        </a>
+                      ) : (selectedSourceReference || '—')}
+                      {selected.sourceType
+                        ? ` · ${sourceTypeLabel(selected.sourceType)}`
+                        : ''}
+                    </p>
+                  )}
                 </div>
                 <div className="eia-actions">
                   {action ? (
@@ -856,6 +1021,27 @@ export default function App() {
                             </>
                           ) : '—'}
                         </dd>
+                        <dt>Source record</dt>
+                        <dd data-testid="overview-source">
+                          {hasSource(selected) ? (
+                            <>
+                              {selectedSourceHref ? (
+                                <a
+                                  href={selectedSourceHref}
+                                  data-testid="overview-source-link"
+                                  onClick={openLink}
+                                >
+                                  {selectedSourceReference || '—'}
+                                </a>
+                              ) : (selectedSourceReference || '—')}
+                              {selected.sourceType ? (
+                                <span className="eia-muted">
+                                  {' '}· {sourceTypeLabel(selected.sourceType)}
+                                </span>
+                              ) : null}
+                            </>
+                          ) : '—'}
+                        </dd>
                         <dt>Payment date</dt>
                         <dd>{selected.paymentDate || '—'}</dd>
                         <dt>Version</dt>
@@ -893,10 +1079,11 @@ export default function App() {
                     <p>
                       A payment is the disbursement leg of the claim or policy lifecycle: it records
                       the amount, currency, payee party, and value date that leave the insurer.
-                      Approval controls execution — the payment stays blocked until it is submitted,
-                      authorized, and approved, and issuing it releases the instruction to SAP/bank.
-                      The source claim or policy is not present in this API slice; that context lives
-                      upstream in the claim and policy domains, so it cannot be shown on this record.
+                      The source record controls what is being paid — the claim, policy, or other
+                      obligation this disbursement settles — and it supplies the reserve, settlement,
+                      and coverage context upstream. Approval controls execution — the payment stays
+                      blocked until it is submitted, authorized, and approved, and issuing it releases
+                      the instruction to SAP/bank.
                     </p>
                     <div className="links">
                       {selected.payeePartyId && (
@@ -906,6 +1093,16 @@ export default function App() {
                           onClick={openLink}
                         >
                           Payee party record · {selectedPayeeText || shortId(selected.payeePartyId)}
+                        </a>
+                      )}
+                      {selectedSourceHref && (
+                        <a
+                          href={selectedSourceHref}
+                          data-testid="context-source-link"
+                          onClick={openLink}
+                        >
+                          Source {sourceTypeLabel(selected.sourceType) || 'record'} ·{' '}
+                          {selectedSourceReference || '—'}
                         </a>
                       )}
                     </div>
@@ -1056,85 +1253,234 @@ export default function App() {
               </button>
             </div>
 
-            <form className="eia-form-grid" onSubmit={submit} style={{ marginTop: 16 }}>
-              <div className="eia-field span-2">
-                <label htmlFor="create-payment-type">Payment type</label>
-                <select
-                  id="create-payment-type"
-                  value={form.paymentType}
-                  onChange={(event) => update('paymentType', event.target.value)}
-                  autoFocus
+            <form onSubmit={submit} style={{ marginTop: 16 }} data-testid="create-payment-form">
+              {form.sourceFromUrl && formHasSource && (
+                <section
+                  className="eia-source-card"
+                  aria-label="Source record"
+                  data-testid="create-source-card"
                 >
-                  {PAYMENT_TYPES.map((type) => (
-                    <option key={type} value={type}>{type}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="eia-field">
-                <label htmlFor="create-amount">Amount</label>
-                <input
-                  id="create-amount"
-                  type="number"
-                  min="0.01"
-                  step="0.0001"
-                  value={form.amount}
-                  onChange={(event) => update('amount', event.target.value)}
-                  required
-                />
-              </div>
-              <div className="eia-field">
-                <label htmlFor="create-currency">Currency (ISO 4217)</label>
-                <input
-                  id="create-currency"
-                  maxLength={3}
-                  value={form.currency}
-                  onChange={(event) => update('currency', event.target.value.toUpperCase())}
-                  required
-                />
-              </div>
-              <div className="eia-field span-2">
-                <label>Payee party</label>
-                <EntityPicker
-                  endpoint={PARTY_SEARCH_ENDPOINT}
-                  value={form.payeePartyId}
-                  valueLabel={partyLabel(payeeParties, form.payeePartyId)}
-                  onChange={(id, item) => {
-                    update('payeePartyId', id || '');
-                    if (item) rememberParty(item);
-                  }}
-                  placeholder="Search party number or name…"
-                  disabled={saving}
-                />
-                {form.payeePartyId && (
-                  <span className="eia-picker-hint">
-                    {formPayeeSecondary || 'Party selected'} ·{' '}
-                    <a
-                      href={recordHref('party', form.payeePartyId)}
-                      data-testid="payee-picker-link"
-                      onClick={openLink}
+                  <div className="eia-source-card-head">
+                    <h3>Source record</h3>
+                    <button
+                      type="button"
+                      className="eia-btn-ghost"
+                      onClick={clearSource}
+                      disabled={saving}
+                      data-testid="clear-source"
                     >
-                      Open party record
-                    </a>
-                  </span>
-                )}
-              </div>
-              <div className="eia-field">
-                <label htmlFor="create-payment-date">Payment date</label>
-                <input
-                  id="create-payment-date"
-                  type="date"
-                  value={form.paymentDate}
-                  onChange={(event) => update('paymentDate', event.target.value)}
-                  required
-                />
-              </div>
-              <div className="eia-actions span-3" style={{ justifyContent: 'flex-end' }}>
-                <button type="button" className="eia-btn-secondary" onClick={closeCreate} disabled={saving}>
-                  Cancel
-                </button>
-                <button type="submit" disabled={saving}>
-                  {saving ? 'Creating…' : 'Create payment'}
-                </button>
+                      Clear source
+                    </button>
+                  </div>
+                  <dl className="eia-kv" style={{ marginTop: 8 }}>
+                    <dt>Type</dt>
+                    <dd data-testid="create-source-type">
+                      {formSourceLabel || '—'}
+                      {formSourceType ? (
+                        <span className="eia-muted"> ({formSourceType})</span>
+                      ) : null}
+                    </dd>
+                    <dt>Reference</dt>
+                    <dd data-testid="create-source-reference">
+                      {formSourceReference || '—'}
+                    </dd>
+                    <dt>Record</dt>
+                    <dd>
+                      {formSourceHref ? (
+                        <a
+                          href={formSourceHref}
+                          data-testid="create-source-link"
+                          onClick={openLink}
+                        >
+                          {sourceLinkLabel({ sourceType: formSourceType })}
+                        </a>
+                      ) : (
+                        <span className="eia-muted">
+                          No linked record for this source type.
+                        </span>
+                      )}
+                    </dd>
+                  </dl>
+                  <p className="eia-muted" style={{ margin: '8px 0 0' }}>
+                    The source record controls what is being paid; this payment is only the
+                    disbursement leg. Clearing the source removes the hand-off from the create
+                    request.
+                  </p>
+                </section>
+              )}
+
+              {!form.sourceFromUrl && (
+                <section
+                  className="eia-source-card"
+                  aria-label="Optional source record"
+                  data-testid="manual-source"
+                >
+                  <div className="eia-source-card-head">
+                    <h3>Source record (optional)</h3>
+                    {formHasSource && (
+                      <button
+                        type="button"
+                        className="eia-btn-ghost"
+                        onClick={clearSource}
+                        disabled={saving}
+                        data-testid="clear-manual-source"
+                      >
+                        Clear source
+                      </button>
+                    )}
+                  </div>
+                  <p className="eia-muted" style={{ margin: '0 0 8px' }}>
+                    Link this payment to the claim, policy, or other obligation it disburses. A
+                    classified source needs both a type and a record id; OTHER may carry just a
+                    human reference.
+                  </p>
+                  <div className="eia-form-grid">
+                    <div className="eia-field">
+                      <label htmlFor="create-source-type">Source type</label>
+                      <select
+                        id="create-source-type"
+                        value={form.sourceType}
+                        onChange={(event) => update('sourceType', event.target.value)}
+                        disabled={saving}
+                      >
+                        <option value="">No source</option>
+                        {SOURCE_TYPES.map((type) => (
+                          <option key={type} value={type}>
+                            {sourceTypeLabel(type)} ({type})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="eia-field span-2">
+                      <label htmlFor="create-source-id">Source record id</label>
+                      <input
+                        id="create-source-id"
+                        value={form.sourceId}
+                        onChange={(event) => update('sourceId', event.target.value)}
+                        placeholder="UUID of the claim or policy record"
+                        autoComplete="off"
+                        disabled={saving}
+                      />
+                    </div>
+                    <div className="eia-field span-3">
+                      <label htmlFor="create-source-reference">Source reference</label>
+                      <input
+                        id="create-source-reference"
+                        maxLength={SOURCE_REFERENCE_MAX_LENGTH}
+                        value={form.sourceReference}
+                        onChange={(event) => update('sourceReference', event.target.value)}
+                        placeholder="CLM-2026-0000001 or POL-2026-0000001"
+                        autoComplete="off"
+                        disabled={saving}
+                      />
+                    </div>
+                  </div>
+                </section>
+              )}
+
+              {formHasSource && (
+                <>
+                  <input
+                    type="hidden"
+                    name="sourceType"
+                    value={formSourceType}
+                    data-testid="source-type-hidden"
+                  />
+                  <input
+                    type="hidden"
+                    name="sourceId"
+                    value={formSourceId}
+                    data-testid="source-id-hidden"
+                  />
+                  <input
+                    type="hidden"
+                    name="sourceReference"
+                    value={formSourceReference}
+                    data-testid="source-reference-hidden"
+                  />
+                </>
+              )}
+
+              <div className="eia-form-grid">
+                <div className="eia-field span-2">
+                  <label htmlFor="create-payment-type">Payment type</label>
+                  <select
+                    id="create-payment-type"
+                    value={form.paymentType}
+                    onChange={(event) => update('paymentType', event.target.value)}
+                    autoFocus
+                  >
+                    {PAYMENT_TYPES.map((type) => (
+                      <option key={type} value={type}>{type}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="eia-field">
+                  <label htmlFor="create-amount">Amount</label>
+                  <input
+                    id="create-amount"
+                    type="number"
+                    min="0.01"
+                    step="0.0001"
+                    value={form.amount}
+                    onChange={(event) => update('amount', event.target.value)}
+                    required
+                  />
+                </div>
+                <div className="eia-field">
+                  <label htmlFor="create-currency">Currency (ISO 4217)</label>
+                  <input
+                    id="create-currency"
+                    maxLength={3}
+                    value={form.currency}
+                    onChange={(event) => update('currency', event.target.value.toUpperCase())}
+                    required
+                  />
+                </div>
+                <div className="eia-field span-2">
+                  <label>Payee party</label>
+                  <EntityPicker
+                    endpoint={PARTY_SEARCH_ENDPOINT}
+                    value={form.payeePartyId}
+                    valueLabel={partyLabel(payeeParties, form.payeePartyId)}
+                    onChange={(id, item) => {
+                      update('payeePartyId', id || '');
+                      if (item) rememberParty(item);
+                    }}
+                    placeholder="Search party number or name…"
+                    disabled={saving}
+                  />
+                  {form.payeePartyId && (
+                    <span className="eia-picker-hint">
+                      {formPayeeSecondary || 'Party selected'} ·{' '}
+                      <a
+                        href={recordHref('party', form.payeePartyId)}
+                        data-testid="payee-picker-link"
+                        onClick={openLink}
+                      >
+                        Open party record
+                      </a>
+                    </span>
+                  )}
+                </div>
+                <div className="eia-field">
+                  <label htmlFor="create-payment-date">Payment date</label>
+                  <input
+                    id="create-payment-date"
+                    type="date"
+                    value={form.paymentDate}
+                    onChange={(event) => update('paymentDate', event.target.value)}
+                    required
+                  />
+                </div>
+                <div className="eia-actions span-3" style={{ justifyContent: 'flex-end' }}>
+                  <button type="button" className="eia-btn-secondary" onClick={closeCreate} disabled={saving}>
+                    Cancel
+                  </button>
+                  <button type="submit" disabled={saving}>
+                    {saving ? 'Creating…' : 'Create payment'}
+                  </button>
+                </div>
               </div>
             </form>
 

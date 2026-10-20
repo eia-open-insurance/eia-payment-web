@@ -73,3 +73,54 @@
   color: var(--eia-blue);
   text-decoration-color: var(--eia-blue);
 }
+
+/*
+ * Source-record hand-off card in the create dialog. It summarizes the record
+ * the payment disburses and keeps the cross-link back to the owning remote
+ * visually distinct from the form fields.
+ */
+.eia-source-card {
+  background: var(--eia-soft);
+  border: 1px solid var(--eia-line);
+  border-left: 3px solid var(--eia-blue);
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+
+.eia-source-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.eia-source-card-head h3 {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+
+.eia-source-card .eia-kv {
+  grid-template-columns: 90px minmax(0, 1fr);
+}
+
+.eia-source-card .eia-form-grid {
+  margin-top: 2px;
+}
+
+.eia-source-card a {
+  color: var(--eia-blue);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.eia-source-card a:hover {
+  text-decoration: underline;
+}
+
+.eia-source-card .eia-btn-ghost {
+  padding: 3px 6px !important;
+  font-size: 10px !important;
+}

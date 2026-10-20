@@ -13,6 +13,18 @@
 
 Payment federated remote: screens, widgets, record tabs, and transaction composition. Payment authority, issuance, SAP S/4HANA posting, reconciliation, tax, and escheatment.
 
+## Source-record hand-off
+
+Other verticals open the payment create dialog with:
+
+`/payment?new=1&sourceType=DIRECT_CLAIM&sourceId=<uuid>&sourceReference=CLM-…&amount=…&currency=USD&payeePartyId=<uuid>`
+
+`sourceType` is one of `DIRECT_CLAIM`, `ASSUMED_CLAIM`, `POLICY`, or `OTHER`.
+A classified source links back to `/direct-claims`, `/assumed-claims`, or
+`/policy` and submits `sourceType`/`sourceId`/`sourceReference`; `OTHER` may
+carry only its human reference. Source fields are optional on a normal create
+and are sent only when supplied.
+
 ## Responsibilities
 
 - Keep this repository focused on one deployable component or one platform concern.

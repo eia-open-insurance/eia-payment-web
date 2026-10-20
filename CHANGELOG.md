@@ -19,3 +19,14 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 - Payee cross-link resolution through `GET /api/v1/parties/{id}`: the header,
   summary payee card, Overview, and context panel show `name · party number`
   link text with a short-UUID fallback, and a 404 never blocks the record.
+- Source-record hand-off: `?new=1&sourceType=&sourceId=&sourceReference=` plus
+  `amount`, `currency`, and `payeePartyId` prefills the create dialog, resolves
+  a prefilled payee label through the Party API, and submits the optional
+  `sourceType`/`sourceId`/`sourceReference` fields. A prefilled source shows a
+  clearable card with a cross-link to `/direct-claims`, `/assumed-claims`, or
+  `/policy`; payments created without a hand-off may still set the source
+  manually, with type/id pair validation before POST.
+- Payment Overview and context panel now show the source record and explain
+  that the payment is the disbursement leg while the source record controls
+  what is being paid; the queue, record subtitle, and filter include the source
+  reference and source id.

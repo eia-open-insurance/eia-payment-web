@@ -24,6 +24,15 @@ import {
   linkedDocuments,
   linkedDocumentsEndpoint
 } from './documents.js';
+import {
+  activityEvents,
+  aggregateEventsEndpoint,
+  eventStatus,
+  eventStatusTone,
+  eventTimestamp,
+  eventTypeLabel,
+  payloadFacts
+} from './events.js';
 
 const TENANT = '11111111-1111-7111-8111-111111111111';
 const PARTY_SEARCH_ENDPOINT = '/api/v1/parties/search';
@@ -80,7 +89,8 @@ const LIFECYCLE_INDEX = {
 const TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'approval', label: 'Approval Path' },
-  { id: 'details', label: 'Payment Details' }
+  { id: 'details', label: 'Payment Details' },
+  { id: 'activity', label: 'Activity' }
 ];
 
 const OVERLAY_STYLE = {
@@ -355,6 +365,10 @@ export default function App() {
   const [documents, setDocuments] = useState([]);
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [documentsError, setDocumentsError] = useState('');
+  const [activity, setActivity] = useState([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState('');
+  const [activityNonce, setActivityNonce] = useState(0);
 
   const paymentsRef = useRef([]);
   const selectedRef = useRef(null);
@@ -511,6 +525,47 @@ export default function App() {
       alive = false;
     };
   }, [selected?.id, detailNonce]);
+
+  /**
+   * Activity for the selected payment. Events are fetched when the record is
+   * selected and refetched after every lifecycle write or explicit refresh.
+   * The request owns its loading/error state so an unavailable event stream
+   * never blocks the payment record.
+   */
+  useEffect(() => {
+    if (!selected?.id) {
+      setActivity([]);
+      setActivityError('');
+      setActivityLoading(false);
+      return undefined;
+    }
+    let alive = true;
+    setActivity([]);
+    setActivityError('');
+    setActivityLoading(true);
+    api(aggregateEventsEndpoint(selected.id))
+      .then(({ response, body }) => {
+        if (!alive) return;
+        if (!response.ok) {
+          setActivity([]);
+          setActivityError(problemMessage(body, `Activity request failed: ${response.status}`));
+          setActivityLoading(false);
+          return;
+        }
+        setActivity(activityEvents(body));
+        setActivityError('');
+        setActivityLoading(false);
+      })
+      .catch((cause) => {
+        if (!alive) return;
+        setActivity([]);
+        setActivityError(cause.message);
+        setActivityLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [selected?.id, detailNonce, activityNonce]);
 
   const createPayeePartyId = showCreate ? form.payeePartyId : '';
 
@@ -1338,6 +1393,145 @@ export default function App() {
                     Amounts are stored as numeric(19,4); currency is an ISO 4217 code and the payment
                     type follows SPEC 11.7.5.
                   </p>
+                </section>
+              )}
+
+              {tab === 'activity' && (
+                <section id="panel-activity" role="tabpanel" aria-labelledby="tab-activity">
+                  <div className="eia-section-title">
+                    <h2>Activity</h2>
+                    <button
+                      type="button"
+                      className="eia-btn-secondary"
+                      data-testid="activity-refresh"
+                      onClick={() => setActivityNonce((value) => value + 1)}
+                      disabled={activityLoading}
+                    >
+                      {activityLoading ? 'Refreshing…' : 'Refresh activity'}
+                    </button>
+                  </div>
+                  <p className="eia-muted" data-testid="activity-context" style={{ marginTop: 0 }}>
+                    Activity is derived from the append-only payment event stream. Events are
+                    immutable facts: a recorded event is never edited or deleted here. The payment
+                    record is the source of truth for current state; event payloads show what was
+                    true when the fact occurred. Newest events appear first.
+                  </p>
+
+                  <section
+                    className="eia-card"
+                    aria-label="Payment activity"
+                    data-testid="activity-card"
+                  >
+                    <div className="eia-section-title" style={{ marginTop: 0 }}>
+                      <h3>Event timeline</h3>
+                      <span className="eia-muted" data-testid="activity-count">
+                        {activityLoading
+                          ? '…'
+                          : activityError
+                            ? '—'
+                            : `${activity.length} event${activity.length === 1 ? '' : 's'}`}
+                      </span>
+                    </div>
+
+                    {activityLoading && (
+                      <p className="eia-muted" data-testid="activity-loading">
+                        Loading payment activity…
+                      </p>
+                    )}
+                    {!activityLoading && activityError && (
+                      <p className="eia-muted" data-testid="activity-error">
+                        Payment activity could not be loaded ({activityError}). The payment record
+                        is unaffected.
+                      </p>
+                    )}
+                    {!activityLoading && !activityError && activity.length === 0 && (
+                      <p className="eia-muted" data-testid="activity-empty">
+                        No events have been recorded for this payment yet.
+                      </p>
+                    )}
+                    {!activityLoading && !activityError && activity.length > 0 && (
+                      <ol
+                        className="eia-timeline"
+                        data-testid="activity-timeline"
+                        aria-label="Payment activity timeline"
+                      >
+                        {activity.map((event, index) => {
+                          const timestamp = eventTimestamp(event);
+                          const facts = payloadFacts(event);
+                          const status = eventStatus(event);
+                          const meta = [
+                            event.book ? `Book ${event.book}` : '',
+                            event.aggregateVersion !== undefined
+                              ? `Aggregate v${event.aggregateVersion}`
+                              : '',
+                            event.eventVersion !== undefined ? `Event v${event.eventVersion}` : '',
+                            event.receivedAt ? `Received ${event.receivedAt}` : ''
+                          ].filter(Boolean).join(' · ');
+                          return (
+                            <li
+                              key={event.eventId || `${event.aggregateVersion}-${index}`}
+                              className="eia-timeline-item"
+                              data-testid={`activity-row-${index}`}
+                              data-event-id={event.eventId || undefined}
+                            >
+                              <div className="eia-timeline-head">
+                                <b data-testid={`activity-event-label-${index}`}>
+                                  {eventTypeLabel(event.eventType)}
+                                </b>
+                                <code
+                                  className="eia-mono"
+                                  data-testid={`activity-event-type-${index}`}
+                                >
+                                  {event.eventType || '—'}
+                                </code>
+                                <span
+                                  className={`eia-pill ${eventStatusTone(status)}`}
+                                  data-testid={`activity-status-${index}`}
+                                >
+                                  {status || '—'}
+                                </span>
+                                <time
+                                  className="eia-timeline-meta"
+                                  dateTime={timestamp.iso || undefined}
+                                  data-testid={`activity-time-${index}`}
+                                >
+                                  {timestamp.label}
+                                </time>
+                              </div>
+                              {meta && (
+                                <p className="eia-activity-meta" data-testid={`activity-meta-${index}`}>
+                                  {meta}
+                                </p>
+                              )}
+                              {facts.length > 0 ? (
+                                <dl
+                                  className="eia-activity-facts"
+                                  data-testid={`activity-facts-${index}`}
+                                >
+                                  {facts.map((fact) => (
+                                    <div className="eia-activity-fact" key={fact.key}>
+                                      <dt>{fact.label}</dt>
+                                      <dd data-testid={`activity-fact-${fact.key}-${index}`}>
+                                        {fact.value}
+                                      </dd>
+                                    </div>
+                                  ))}
+                                </dl>
+                              ) : (
+                                <p
+                                  className="eia-activity-meta"
+                                  data-testid={`activity-facts-empty-${index}`}
+                                >
+                                  No amount, currency, source, or status facts in this event
+                                  payload.
+                                </p>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ol>
+                    )}
+                  </section>
                 </section>
               )}
             </>

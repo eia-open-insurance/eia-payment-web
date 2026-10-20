@@ -40,3 +40,15 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 - Playwright coverage for the linked-document query and tenant header, document
   links, the empty state, a contained document error, and rendering the payment
   while the Document API is still in flight.
+- Payment **Activity** tab: selecting a payment fetches
+  `GET /api/v1/events/aggregate/{paymentId}?limit=50` with the tenant header and
+  renders a newest-first event timeline with each event's timestamp, readable
+  type plus raw event name, delivery status, and payload facts (amount,
+  currency, source type/reference, and status). The card states that activity is
+  event-derived and append-only and that the payment record is the source of
+  truth. Activity refetches on record selection, lifecycle writes, and the
+  card's Refresh activity control; loading, empty, and error states stay inside
+  the card, and a 503 never blocks the payment record.
+- Playwright coverage for the aggregate path/limit/tenant header, newest-first
+  ordering, payload summaries, the empty state, a contained 503, explicit
+  refresh, and refetch when another payment is selected.

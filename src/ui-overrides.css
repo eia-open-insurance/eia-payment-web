@@ -124,3 +124,113 @@
   padding: 3px 6px !important;
   font-size: 10px !important;
 }
+
+/*
+ * Payment activity timeline: newest-first event rows with their payload facts.
+ * These rules live in the local overrides so `ui.css` stays a verbatim copy of
+ * the shell stylesheet.
+ */
+.eia-timeline {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.eia-timeline-item {
+  position: relative;
+  padding: 0 0 14px 22px;
+}
+
+.eia-timeline-item:last-child {
+  padding-bottom: 0;
+}
+
+.eia-timeline-item::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--eia-blue);
+  border-radius: 50%;
+  background: #fff;
+}
+
+.eia-timeline-item::after {
+  content: '';
+  position: absolute;
+  top: 18px;
+  bottom: 0;
+  left: 7px;
+  width: 2px;
+  background: var(--eia-line);
+}
+
+.eia-timeline-item:last-child::after {
+  display: none;
+}
+
+.eia-timeline-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.eia-timeline-head b {
+  font-size: 12px;
+  color: var(--eia-navy);
+}
+
+.eia-timeline-head code {
+  color: var(--eia-muted);
+}
+
+.eia-timeline-meta {
+  font-size: 11px;
+  color: var(--eia-muted);
+}
+
+.eia-activity-meta {
+  margin: 4px 0 0;
+  font-size: 10px;
+  color: var(--eia-muted);
+  overflow-wrap: anywhere;
+}
+
+.eia-activity-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 18px;
+  margin: 7px 0 0;
+  padding: 8px 10px;
+  background: #f7fafc;
+  border: 1px solid var(--eia-line);
+  border-radius: 6px;
+}
+
+.eia-activity-fact {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
+
+.eia-activity-fact dt {
+  margin: 0;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--eia-muted);
+  white-space: nowrap;
+}
+
+.eia-activity-fact dd {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--eia-ink);
+  overflow-wrap: anywhere;
+}

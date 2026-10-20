@@ -36,6 +36,28 @@ path, or status. An empty state and an evidence note are always shown, and a slo
 or failing Document API renders inside the card without blocking the payment
 record.
 
+## Activity timeline
+
+The **Activity** tab shows the append-only event stream for the selected
+payment. It calls
+`GET /api/v1/events/aggregate/{paymentId}?limit=50` with the tenant header and
+renders the `{ items }` page newest first by `occurredAt` (aggregate version
+breaks ties), so the service's response order does not affect the timeline.
+
+Each row shows the occurred-at timestamp in UTC, a readable event type with the
+raw name (for example **Payment created** / `payment.payment.created`), the
+event delivery status (`PROCESSED`, `RECEIVED`, `FAILED`, …), and the payload
+facts the event carries: amount, currency, source type/reference, and status.
+Not every event type carries every fact, so absent facts are omitted rather
+than rendered blank. The card states that activity is event-derived and
+append-only and that the payment record is the source of truth for current
+state.
+
+Selecting another payment refetches activity; the card's **Refresh activity**
+control, the page **Refresh** control, and a completed lifecycle write all
+refetch it as well. Loading, empty, and error states stay inside the card, so a
+slow or failing event stream never blocks or replaces the payment record.
+
 ## Responsibilities
 
 - Keep this repository focused on one deployable component or one platform concern.

@@ -30,3 +30,13 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   that the payment is the disbursement leg while the source record controls
   what is being paid; the queue, record subtitle, and filter include the source
   reference and source id.
+- Linked-document visibility: selecting a payment fetches
+  `GET /api/v1/documents?linkedType=PAYMENT&linkedId={id}` with the tenant
+  header, and an Overview **Documents** card shows the document count plus each
+  document's number, title, type, and status, with the number linking to
+  `/document?record={id}`. An empty state and an evidence note are always shown;
+  a Document API failure stays inside the card and never blocks the payment
+  record.
+- Playwright coverage for the linked-document query and tenant header, document
+  links, the empty state, a contained document error, and rendering the payment
+  while the Document API is still in flight.

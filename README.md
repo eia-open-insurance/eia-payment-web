@@ -25,6 +25,17 @@ A classified source links back to `/direct-claims`, `/assumed-claims`, or
 carry only its human reference. Source fields are optional on a normal create
 and are sent only when supplied.
 
+## Linked documents
+
+The Overview tab shows a **Documents** card for the selected payment. It calls
+`GET /api/v1/documents?linkedType=PAYMENT&linkedId={paymentId}` with the tenant
+header and renders the document count plus each document's number (linked to
+`/document?record={id}`), title, type, and status. Documents are evidence: they
+record what was filed against the payment but never change its amount, approval
+path, or status. An empty state and an evidence note are always shown, and a slow
+or failing Document API renders inside the card without blocking the payment
+record.
+
 ## Responsibilities
 
 - Keep this repository focused on one deployable component or one platform concern.

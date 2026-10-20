@@ -1,0 +1,75 @@
+/*
+ * Payment workbench additions layered on the canonical `ui.css`.
+ *
+ * The canonical stylesheet owns the shared record, picker, and context-panel
+ * language. Only the queue filter and payment-specific cross-link affordances
+ * are added here so `ui.css` stays a verbatim copy of the shell stylesheet.
+ */
+.eia-queue-search {
+  background: #fff;
+  border: 1px solid var(--eia-line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  box-shadow: 0 1px 2px rgba(16, 42, 67, .04);
+}
+
+.eia-queue-search .eia-search-box {
+  height: 40px;
+  background: #fff;
+}
+
+.eia-queue-search input[type="search"] {
+  min-height: 34px !important;
+  font-size: 13px !important;
+}
+
+.eia-queue-clear {
+  background: transparent !important;
+  border: 0 !important;
+  color: var(--eia-blue) !important;
+  padding: 2px 5px !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
+
+.eia-queue-clear:hover {
+  color: var(--eia-blue-dark) !important;
+  text-decoration: underline;
+}
+
+.eia-picker-hint a {
+  color: var(--eia-blue);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.eia-picker-hint a:hover {
+  text-decoration: underline;
+}
+
+.eia-kv a,
+.eia-record-subtitle a {
+  color: var(--eia-blue);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.eia-kv a:hover,
+.eia-record-subtitle a:hover {
+  text-decoration: underline;
+}
+
+.eia-summary-grid .value a {
+  color: var(--eia-navy);
+  text-decoration: underline;
+  text-decoration-color: #b9cde0;
+  text-underline-offset: 2px;
+}
+
+.eia-summary-grid .value a:hover {
+  color: var(--eia-blue);
+  text-decoration-color: var(--eia-blue);
+}

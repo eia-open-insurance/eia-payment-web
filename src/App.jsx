@@ -1,8 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import './ui.css';
+import './ui-overrides.css';
+import EntityPicker from './EntityPicker.jsx';
+import { navigate, recordHref } from './navigation.js';
 
 const TENANT = '11111111-1111-7111-8111-111111111111';
-const DEMO_PAYEE = '22222222-2222-7222-8222-222222222222';
+const PARTY_SEARCH_ENDPOINT = '/api/v1/parties/search';
+const QUEUE_FILTER_PLACEHOLDER = 'Filter payments by number, type, payee, or status…';
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const PAYMENT_TYPES = [
   'INDEMNITY', 'DEFENSE_COST', 'ALAE', 'EXPENSE', 'MEDICAL',
@@ -83,7 +88,7 @@ function initialForm() {
     paymentType: 'INDEMNITY',
     amount: '125000.00',
     currency: 'USD',
-    payeePartyId: DEMO_PAYEE,
+    payeePartyId: '',
     paymentDate: today()
   };
 }
@@ -162,18 +167,115 @@ async function api(path, options = {}) {
   return { response, body };
 }
 
+/**
+ * The remote is mounted at the shell route (/payment) or directly at the dev
+ * server root (/). Only treat the URL as payment state on those routes, so a
+ * cross-link to /party or /claim is never interpreted as a payment id.
+ */
+function onPaymentRoute() {
+  if (typeof window === 'undefined') return false;
+  const path = window.location.pathname.replace(/\/+$/, '');
+  return path === '' || path === '/index.html' || path.endsWith('/payment');
+}
+
+function readUrlState() {
+  if (typeof window === 'undefined') return { record: '', create: false };
+  const params = new URLSearchParams(window.location.search);
+  return {
+    record: (params.get('record') || '').trim(),
+    create: params.get('new') === '1'
+  };
+}
+
+/** Writes ?record/?new without dispatching popstate; state already matches. */
+function writeUrl({ record = '', create = false } = {}) {
+  if (typeof window === 'undefined' || !onPaymentRoute()) return;
+  const params = new URLSearchParams();
+  if (record) params.set('record', record);
+  if (create) params.set('new', '1');
+  const query = params.toString();
+  const target = `${window.location.pathname}${query ? `?${query}` : ''}`;
+  const current = `${window.location.pathname}${window.location.search}`;
+  if (target === current) return;
+  try {
+    window.history.pushState({}, '', target);
+  } catch {
+    // URL state is an enhancement; record selection still works without it.
+  }
+}
+
+function partyLabel(parties, partyId) {
+  return partyId && parties[partyId] ? parties[partyId].label : '';
+}
+
+function partySecondary(parties, partyId) {
+  return partyId && parties[partyId] ? parties[partyId].secondary : '';
+}
+
+function openLink(event) {
+  event.preventDefault();
+  navigate(event.currentTarget.getAttribute('href'));
+}
+
+function PartyLink({ partyId, label, testId, title }) {
+  if (!partyId) return <span>—</span>;
+  const href = recordHref('party', partyId);
+  return (
+    <a
+      href={href}
+      data-testid={testId}
+      title={title || `Open party ${partyId}`}
+      onClick={openLink}
+    >
+      {label || shortId(partyId)}
+    </a>
+  );
+}
+
+function paymentMatchesFilter(payment, needle, parties) {
+  const party = payment.payeePartyId ? parties[payment.payeePartyId] : null;
+  return [
+    payment.paymentNumber,
+    payment.paymentType,
+    humanize(payment.paymentType),
+    payment.payeePartyId,
+    party?.label,
+    party?.secondary,
+    payment.status
+  ].some((value) => String(value || '').toLowerCase().includes(needle));
+}
+
 export default function App() {
   const [payments, setPayments] = useState([]);
   const [selected, setSelected] = useState(null);
   const [form, setForm] = useState(initialForm);
   const [tab, setTab] = useState('overview');
   const [showCreate, setShowCreate] = useState(false);
+  const [queueFilter, setQueueFilter] = useState('');
+  const [payeeParties, setPayeeParties] = useState({});
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState(null);
   const [detailNonce, setDetailNonce] = useState(0);
+
+  const paymentsRef = useRef([]);
+  const selectedRef = useRef(null);
+  const showCreateRef = useRef(false);
+  const applyingUrlRef = useRef(false);
+
+  useEffect(() => {
+    paymentsRef.current = payments;
+  }, [payments]);
+
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+
+  useEffect(() => {
+    showCreateRef.current = showCreate;
+  }, [showCreate]);
 
   async function load(options = {}) {
     if (!options.silent) {
@@ -184,20 +286,45 @@ export default function App() {
       const { response, body } = await api('/api/v1/payments');
       if (!response.ok) {
         setError(problemMessage(body, `Load failed: ${response.status}`));
-        return;
+        return [];
       }
       const items = Array.isArray(body) ? body : Array.isArray(body?.items) ? body.items : [];
       setPayments(items);
-      setSelected((current) => current || items[0] || null);
+      setSelected((current) => {
+        const match = current ? items.find((payment) => payment.id === current.id) : null;
+        if (match) return match;
+        if (options.selectFirst === false) return current;
+        return items[0] || null;
+      });
+      return items;
     } catch (cause) {
       setError(cause.message);
+      return [];
     } finally {
       if (!options.silent) setLoading(false);
     }
   }
 
   useEffect(() => {
-    load().catch((cause) => setError(cause.message));
+    let alive = true;
+    const initial = readUrlState();
+    load({ selectFirst: !initial.record && !initial.create })
+      .then((items) => {
+        if (!alive) return undefined;
+        return applyUrlState(items, { initial: true });
+      })
+      .catch((cause) => {
+        if (alive) setError(cause.message);
+      });
+
+    const onPopState = () => {
+      applyUrlState(paymentsRef.current).catch((cause) => setError(cause.message));
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => {
+      alive = false;
+      window.removeEventListener('popstate', onPopState);
+    };
   }, []);
 
   useEffect(() => {
@@ -226,6 +353,7 @@ export default function App() {
       if (event.key === 'Escape' && !saving) {
         setShowCreate(false);
         setError('');
+        writeUrl({ record: selectedRef.current?.id || '' });
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -236,25 +364,107 @@ export default function App() {
     setForm((current) => ({ ...current, [field]: value }));
   }
 
+  function rememberParty(item) {
+    if (!item?.id) return;
+    setPayeeParties((current) => ({
+      ...current,
+      [item.id]: {
+        label: item.label || item.id,
+        secondary: item.secondary || ''
+      }
+    }));
+  }
+
   function openCreate() {
     setForm(initialForm());
     setError('');
     setNotice('');
     setShowCreate(true);
+    writeUrl({ create: true });
   }
 
   function closeCreate() {
     if (saving) return;
     setShowCreate(false);
     setError('');
+    writeUrl({ record: selectedRef.current?.id || '' });
   }
 
-  function selectPayment(payment) {
-    if (payment.id !== selected?.id) setTab('overview');
+  function selectPayment(payment, options = {}) {
+    if (!payment) return;
+    const currentId = selectedRef.current?.id;
     setSelected(payment);
+    if (payment.id !== currentId) setTab('overview');
     setError('');
     setNotice('');
-    setDetailNonce((value) => value + 1);
+    if (payment.id !== currentId) setDetailNonce((value) => value + 1);
+    if (!options.fromUrl) writeUrl({ record: payment.id });
+  }
+
+  /**
+   * Applies ?record= and ?new=1. A record already in the queue is selected
+   * immediately; otherwise the detail endpoint is queried and the payment is
+   * inserted at the top of the queue. Popstate re-runs the same logic.
+   */
+  async function applyUrlState(rows, { initial = false } = {}) {
+    if (!onPaymentRoute()) return;
+    const { record, create } = readUrlState();
+
+    if (create) {
+      if (!showCreateRef.current) {
+        setForm(initialForm());
+        setError('');
+      }
+      setShowCreate(true);
+      return;
+    }
+
+    if (!record) {
+      if (!initial) {
+        setShowCreate(false);
+        setSelected(null);
+        setTab('overview');
+        setError('');
+        setNotice('');
+      }
+      return;
+    }
+
+    setShowCreate(false);
+    const queue = Array.isArray(rows) && rows.length > 0 ? rows : paymentsRef.current;
+    const known = queue.find((payment) => payment.id === record || payment.paymentNumber === record);
+    if (known) {
+      selectPayment(known, { fromUrl: true });
+      return;
+    }
+
+    if (!UUID_PATTERN.test(record)) {
+      setError(`Payment “${record}” was not found in the payment queue.`);
+      return;
+    }
+    if (applyingUrlRef.current) return;
+
+    applyingUrlRef.current = true;
+    try {
+      const { response, body } = await api(`/api/v1/payments/${encodeURIComponent(record)}`);
+      if (!response.ok) {
+        setError(problemMessage(body, `Load failed: ${response.status}`));
+        return;
+      }
+      if (body?.id) {
+        setPayments((current) => (
+          current.some((payment) => payment.id === body.id) ? current : [body, ...current]
+        ));
+        setSelected(body);
+        setTab('overview');
+        setError('');
+        setNotice('');
+      }
+    } catch (cause) {
+      setError(`Payment ${record} could not be loaded: ${cause.message}`);
+    } finally {
+      applyingUrlRef.current = false;
+    }
   }
 
   async function refreshWorkspace() {
@@ -267,6 +477,10 @@ export default function App() {
   async function submit(event) {
     event.preventDefault();
     if (saving) return;
+    if (!form.payeePartyId) {
+      setError('Select a payee party before creating the payment.');
+      return;
+    }
     setError('');
     setNotice('');
     setSaving(true);
@@ -287,10 +501,13 @@ export default function App() {
       setForm(initialForm());
       setTab('overview');
       setNotice(`Created ${body?.paymentNumber || 'payment'}.`);
-      await load({ silent: true });
+      await load({ silent: true, selectFirst: false });
       if (body?.id) {
         setSelected(body);
         setDetailNonce((value) => value + 1);
+        writeUrl({ record: body.id });
+      } else {
+        writeUrl({});
       }
     } catch (cause) {
       setError(cause.message);
@@ -328,6 +545,14 @@ export default function App() {
 
   const action = selected ? NEXT_ACTION[selected.status] : null;
   const currentIndex = selected ? lifecycleIndex(selected.status) : -1;
+  const selectedPayeeLabel = partyLabel(payeeParties, selected?.payeePartyId);
+  const selectedPayeeSecondary = partySecondary(payeeParties, selected?.payeePartyId);
+  const formPayeeSecondary = partySecondary(payeeParties, form.payeePartyId);
+  const normalizedQueueFilter = queueFilter.trim().toLowerCase();
+  const filterActive = normalizedQueueFilter.length > 0;
+  const visiblePayments = filterActive
+    ? payments.filter((payment) => paymentMatchesFilter(payment, normalizedQueueFilter, payeeParties))
+    : payments;
   const detailRows = selected
     ? [
         ['Payment ID', selected.id],
@@ -375,40 +600,80 @@ export default function App() {
       {error && !showCreate && <p role="alert" style={{ margin: '0 0 12px' }}>{error}</p>}
 
       <div className="eia-record-layout">
-        <aside className="eia-record-list" aria-label="Payment queue">
-          <div className="eia-record-list-head">
-            <strong>Payment queue</strong>
-            <span className="eia-muted">{loading ? '…' : payments.length}</span>
+        <div style={{ minWidth: 0 }}>
+          <div className="eia-queue-search" role="search" aria-label="Filter the payment queue">
+            <div className="eia-search-box">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" />
+                <path d="m20 20-3.4-3.4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+              <input
+                type="search"
+                value={queueFilter}
+                onChange={(event) => setQueueFilter(event.target.value)}
+                placeholder={QUEUE_FILTER_PLACEHOLDER}
+                aria-label="Filter payments by number, type, payee, or status"
+                autoComplete="off"
+                data-testid="payment-filter"
+              />
+              {filterActive && (
+                <button
+                  type="button"
+                  className="eia-queue-clear"
+                  onClick={() => setQueueFilter('')}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
           </div>
-          {payments.map((payment) => {
-            const isSelected = selected?.id === payment.id;
-            return (
-              <button
-                key={payment.id}
-                type="button"
-                className={isSelected ? 'selected' : ''}
-                aria-current={isSelected ? 'true' : undefined}
-                aria-label={`Open record ${payment.paymentNumber}`}
-                onClick={() => selectPayment(payment)}
-              >
-                <span className="record-primary">{payment.paymentNumber}</span>
-                <span className="record-secondary">
-                  {humanize(payment.paymentType)} · {formatMoney(payment.amount, payment.currency)}
-                </span>
-                <span className="record-secondary">
-                  Payee {shortId(payment.payeePartyId)} · {payment.paymentDate || '—'}
-                </span>
-                <span>
-                  <span className={`eia-pill ${statusTone(payment.status)}`}>{payment.status}</span>
-                </span>
-              </button>
-            );
-          })}
-          {!loading && payments.length === 0 && (
-            <div className="empty">No payments yet. Use Create payment to open the first record.</div>
-          )}
-          {loading && payments.length === 0 && <div className="empty">Loading payments…</div>}
-        </aside>
+
+          <aside className="eia-record-list" aria-label="Payment queue">
+            <div className="eia-record-list-head">
+              <strong>Payment queue</strong>
+              <span className="eia-muted" data-testid="payment-queue-count">
+                {loading
+                  ? '…'
+                  : filterActive
+                    ? `${visiblePayments.length} of ${payments.length}`
+                    : payments.length}
+              </span>
+            </div>
+            {visiblePayments.map((payment) => {
+              const isSelected = selected?.id === payment.id;
+              return (
+                <button
+                  key={payment.id}
+                  type="button"
+                  className={isSelected ? 'selected' : ''}
+                  aria-current={isSelected ? 'true' : undefined}
+                  aria-label={`Open record ${payment.paymentNumber}`}
+                  onClick={() => selectPayment(payment)}
+                >
+                  <span className="record-primary">{payment.paymentNumber}</span>
+                  <span className="record-secondary">
+                    {humanize(payment.paymentType)} · {formatMoney(payment.amount, payment.currency)}
+                  </span>
+                  <span className="record-secondary">
+                    Payee {partyLabel(payeeParties, payment.payeePartyId) || shortId(payment.payeePartyId)} · {payment.paymentDate || '—'}
+                  </span>
+                  <span>
+                    <span className={`eia-pill ${statusTone(payment.status)}`}>{payment.status}</span>
+                  </span>
+                </button>
+              );
+            })}
+            {!loading && payments.length > 0 && visiblePayments.length === 0 && (
+              <div className="empty">
+                No payments match “{queueFilter.trim()}”. Clear the filter to see the full queue.
+              </div>
+            )}
+            {!loading && payments.length === 0 && (
+              <div className="empty">No payments yet. Use Create payment to open the first record.</div>
+            )}
+            {loading && payments.length === 0 && <div className="empty">Loading payments…</div>}
+          </aside>
+        </div>
 
         <section className="eia-record-panel" aria-label="Payment record">
           {selected ? (
@@ -431,7 +696,14 @@ export default function App() {
                     {humanize(selected.paymentType)}
                   </p>
                   <p className="eia-record-subtitle">
-                    Payee <span className="eia-mono">{selected.payeePartyId || '—'}</span>
+                    Payee{' '}
+                    {selected.payeePartyId ? (
+                      <PartyLink
+                        partyId={selected.payeePartyId}
+                        label={selectedPayeeLabel}
+                        testId="record-payee-link"
+                      />
+                    ) : '—'}
                     {' · '}
                     Payment date {selected.paymentDate || '—'}
                   </p>
@@ -472,9 +744,18 @@ export default function App() {
                 <div className="eia-card">
                   <h3>Payee</h3>
                   <div className="value" data-testid="summary-payee">
-                    {shortId(selected.payeePartyId)}
+                    {selected.payeePartyId ? (
+                      <PartyLink
+                        partyId={selected.payeePartyId}
+                        label={selectedPayeeLabel}
+                        testId="summary-payee-link"
+                        title={selectedPayeeSecondary || `Open party ${selected.payeePartyId}`}
+                      />
+                    ) : '—'}
                   </div>
-                  <div className="eia-metric-label">party reference</div>
+                  <div className="eia-metric-label">
+                    {selectedPayeeLabel ? 'party record' : 'party reference'}
+                  </div>
                 </div>
                 <div className="eia-card">
                   <h3>Payment date</h3>
@@ -519,7 +800,20 @@ export default function App() {
                         <dt>Currency</dt>
                         <dd>{selected.currency || '—'}</dd>
                         <dt>Payee party</dt>
-                        <dd className="eia-mono">{selected.payeePartyId || '—'}</dd>
+                        <dd>
+                          {selected.payeePartyId ? (
+                            <>
+                              <PartyLink
+                                partyId={selected.payeePartyId}
+                                label={selectedPayeeLabel}
+                                testId="details-payee-link"
+                              />
+                              {selectedPayeeSecondary ? (
+                                <span className="eia-muted"> · {selectedPayeeSecondary}</span>
+                              ) : null}
+                            </>
+                          ) : '—'}
+                        </dd>
                         <dt>Payment date</dt>
                         <dd>{selected.paymentDate || '—'}</dd>
                         <dt>Version</dt>
@@ -547,6 +841,33 @@ export default function App() {
                       </p>
                     </section>
                   </div>
+
+                  <section
+                    className="eia-context-panel"
+                    aria-label="Why this matters"
+                    data-testid="payment-context"
+                  >
+                    <h4>Why this matters</h4>
+                    <p>
+                      A payment is the disbursement leg of the claim or policy lifecycle: it records
+                      the amount, currency, payee party, and value date that leave the insurer.
+                      Approval controls execution — the payment stays blocked until it is submitted,
+                      authorized, and approved, and issuing it releases the instruction to SAP/bank.
+                      The source claim or policy is not present in this API slice; that context lives
+                      upstream in the claim and policy domains, so it cannot be shown on this record.
+                    </p>
+                    <div className="links">
+                      {selected.payeePartyId && (
+                        <a
+                          href={recordHref('party', selected.payeePartyId)}
+                          data-testid="context-payee-link"
+                          onClick={openLink}
+                        >
+                          Payee party record
+                        </a>
+                      )}
+                    </div>
+                  </section>
                 </section>
               )}
 
@@ -628,7 +949,15 @@ export default function App() {
                         {detailRows.map(([label, value]) => (
                           <tr key={label}>
                             <td>{label}</td>
-                            <td>{value === null || value === undefined || value === '' ? '—' : value}</td>
+                            <td>
+                              {label === 'Payee party' && value ? (
+                                <PartyLink
+                                  partyId={value}
+                                  label={selectedPayeeLabel}
+                                  testId="detail-row-payee-link"
+                                />
+                              ) : (value === null || value === undefined || value === '' ? '—' : value)}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -722,13 +1051,30 @@ export default function App() {
                 />
               </div>
               <div className="eia-field span-2">
-                <label htmlFor="create-payee">Payee party ID</label>
-                <input
-                  id="create-payee"
+                <label>Payee party</label>
+                <EntityPicker
+                  endpoint={PARTY_SEARCH_ENDPOINT}
                   value={form.payeePartyId}
-                  onChange={(event) => update('payeePartyId', event.target.value)}
-                  required
+                  valueLabel={partyLabel(payeeParties, form.payeePartyId)}
+                  onChange={(id, item) => {
+                    update('payeePartyId', id || '');
+                    if (item) rememberParty(item);
+                  }}
+                  placeholder="Search party number or name…"
+                  disabled={saving}
                 />
+                {form.payeePartyId && (
+                  <span className="eia-picker-hint">
+                    {formPayeeSecondary || 'Party selected'} ·{' '}
+                    <a
+                      href={recordHref('party', form.payeePartyId)}
+                      data-testid="payee-picker-link"
+                      onClick={openLink}
+                    >
+                      Open party record
+                    </a>
+                  </span>
+                )}
               </div>
               <div className="eia-field">
                 <label htmlFor="create-payment-date">Payment date</label>

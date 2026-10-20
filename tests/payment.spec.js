@@ -2,6 +2,16 @@ import { test, expect } from '@playwright/test';
 
 const TENANT = '11111111-1111-7111-8111-111111111111';
 const API = '**/api/v1/payments**';
+const PARTY_ID = '99999999-9999-7999-8999-999999999999';
+
+const PARTY = {
+  id: PARTY_ID,
+  type: 'PARTY',
+  label: 'PTY-2026-0001',
+  secondary: 'Meridian Manufacturing · ORGANIZATION',
+  status: 'ACTIVE',
+  href: `/party?record=${PARTY_ID}`
+};
 
 function payment(overrides = {}) {
   return {
@@ -165,6 +175,10 @@ test('creates a payment from the modal and sends the tenant header', async ({ pa
     await route.fulfill({ status: 404, body: `unexpected ${method} ${url.pathname}` });
   });
 
+  await page.route('**/api/v1/parties/search**', async (route) => {
+    await json(route, 200, { query: 'Meridian', limit: 8, items: [PARTY] });
+  });
+
   await page.goto('/');
   await page.getByRole('button', { name: 'Create payment' }).click();
 
@@ -175,7 +189,13 @@ test('creates a payment from the modal and sends the tenant header', async ({ pa
   await dialog.getByLabel('Payment type').selectOption('EXPENSE');
   await dialog.getByLabel('Amount').fill('250000');
   await dialog.getByLabel('Currency (ISO 4217)').fill('USD');
-  await dialog.getByLabel('Payee party ID').fill('99999999-9999-7999-8999-999999999999');
+  await dialog.getByPlaceholder('Search party number or name…').fill('Meridian');
+  await dialog.getByRole('button', { name: /PTY-2026-0001/ }).click();
+  await expect(dialog.getByRole('link', { name: 'Open party record' })).toHaveAttribute(
+    'href',
+    `/party?record=${PARTY_ID}`
+  );
+  await expect(dialog.getByText('Meridian Manufacturing · ORGANIZATION')).toBeVisible();
   await dialog.getByLabel('Payment date').fill('2026-11-01');
   await dialog.getByRole('button', { name: 'Create payment' }).click();
 
@@ -191,7 +211,7 @@ test('creates a payment from the modal and sends the tenant header', async ({ pa
     paymentType: 'EXPENSE',
     amount: '250000',
     currency: 'USD',
-    payeePartyId: '99999999-9999-7999-8999-999999999999',
+    payeePartyId: PARTY_ID,
     paymentDate: '2026-11-01'
   });
 });
@@ -333,12 +353,17 @@ test('renders Payment API validation details inside the create modal', async ({ 
     await route.fulfill({ status: 404, body: `unexpected ${method} ${url.pathname}` });
   });
 
+  await page.route('**/api/v1/parties/search**', async (route) => {
+    await json(route, 200, { query: 'PTY', limit: 8, items: [PARTY] });
+  });
+
   await page.goto('/');
   await page.getByRole('button', { name: 'Create payment' }).click();
 
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('Amount').fill('1250.00');
-  await dialog.getByLabel('Payee party ID').fill('99999999-9999-7999-8999-999999999999');
+  await dialog.getByPlaceholder('Search party number or name…').fill('PTY-2026');
+  await dialog.getByRole('button', { name: /PTY-2026-0001/ }).click();
   await dialog.getByRole('button', { name: 'Create payment' }).click();
 
   const alert = dialog.getByRole('alert');

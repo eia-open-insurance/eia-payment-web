@@ -527,3 +527,278 @@ main [role="status"] {
   .eia-form-grid .span-2, .eia-form-grid .span-3 { grid-column: auto; }
 }
 
+
+/* Global record search */
+.eia-searchstrip {
+  background: #fff;
+  border-bottom: 1px solid var(--eia-line);
+  padding: 10px 28px;
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+
+.eia-global-search { position: relative; flex: 1; max-width: 780px; z-index: 40; }
+
+.eia-search-box {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 40px;
+  padding: 0 10px 0 12px;
+  background: #f5f8fb;
+  border: 1px solid #cbd8e5;
+  border-radius: 7px;
+  color: #5e7387;
+  transition: border-color .12s, box-shadow .12s, background .12s;
+}
+.eia-search-box.open, .eia-search-box:focus-within {
+  background: #fff;
+  border-color: var(--eia-blue);
+  box-shadow: 0 0 0 3px rgba(31,95,153,.10);
+}
+.eia-search-box input {
+  flex: 1;
+  min-width: 0;
+  border: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  font-size: 13px !important;
+  color: var(--eia-ink) !important;
+  box-shadow: none !important;
+}
+.eia-search-box input::-webkit-search-cancel-button { cursor: pointer; }
+.eia-search-kbd {
+  font-size: 10px;
+  color: #687c8f;
+  border: 1px solid #d7e0e9;
+  background: #fff;
+  border-radius: 4px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
+.eia-search-panel {
+  position: absolute;
+  top: 46px;
+  left: 0;
+  right: 0;
+  max-height: min(72vh, 680px);
+  overflow: auto;
+  background: #fff;
+  border: 1px solid #cfdae5;
+  border-radius: 9px;
+  box-shadow: 0 18px 44px rgba(15,38,60,.20);
+}
+
+.eia-search-start { padding: 12px; }
+.eia-search-group { padding: 6px 0; border-top: 1px solid #eef2f6; }
+.eia-search-group:first-of-type { border-top: 0; }
+
+.eia-search-group-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 14px 5px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: #6b7f92;
+}
+.eia-search-group-title button {
+  background: transparent !important;
+  color: var(--eia-blue) !important;
+  border: 0 !important;
+  padding: 2px 4px !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: .02em;
+  text-transform: none;
+}
+.eia-search-group-title button:hover { text-decoration: underline; }
+
+.eia-search-result {
+  width: 100% !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  padding: 8px 14px !important;
+  background: #fff !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  text-align: left !important;
+  color: var(--eia-ink) !important;
+}
+.eia-search-result:hover, .eia-search-result.active { background: #eef5fb !important; }
+
+.eia-search-type {
+  flex: 0 0 auto;
+  min-width: 86px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #51697e;
+}
+.eia-search-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.eia-search-main b { font-size: 12px; color: var(--eia-navy); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.eia-search-main small { font-size: 11px; color: var(--eia-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.eia-search-status {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 700;
+  color: #6a7f92;
+  border: 1px solid #dce5ed;
+  border-radius: 3px;
+  padding: 2px 5px;
+}
+
+.eia-search-create-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 3px 10px 10px;
+}
+.eia-search-create {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 2px !important;
+  text-align: left !important;
+  background: #f8fafc !important;
+  border: 1px solid #e1e9f0 !important;
+  border-radius: 6px !important;
+  padding: 8px 10px !important;
+  color: var(--eia-navy) !important;
+}
+.eia-search-create:hover { background: #eef5fb !important; border-color: #c4d8e8 !important; }
+.eia-search-create span { font-size: 11px; font-weight: 700; }
+.eia-search-create small { font-size: 10px; color: var(--eia-muted); }
+
+.eia-search-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 26px 20px;
+  text-align: center;
+  color: var(--eia-muted);
+  font-size: 12px;
+}
+.eia-search-empty strong { color: var(--eia-navy); font-size: 13px; }
+
+.eia-search-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 14px;
+  border-top: 1px solid #e8eef4;
+  background: #f8fafc;
+  color: #718497;
+  font-size: 10px;
+}
+.eia-search-footer b { color: #435b70; }
+.eia-search-footer span:last-child { white-space: nowrap; }
+
+.eia-search-context {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 10px;
+  color: var(--eia-muted);
+  white-space: nowrap;
+}
+.eia-search-context b { color: var(--eia-ink); font-weight: 600; }
+
+@media (max-width: 1000px) {
+  .eia-search-context { display: none; }
+  .eia-searchstrip { padding: 8px 16px; }
+}
+@media (max-width: 700px) {
+  .eia-search-kbd { display: none; }
+  .eia-search-create-grid { grid-template-columns: 1fr; }
+  .eia-search-type { min-width: 64px; }
+}
+
+/* Predictive record picker */
+.eia-picker { position: relative; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.eia-picker-selected {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 36px;
+  padding: 7px 10px;
+  background: #f4f8fb;
+  border: 1px solid #c7d8e7;
+  border-radius: 6px;
+}
+.eia-picker-selected .value { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.eia-picker-selected b { font-size: 12px; color: var(--eia-navy); }
+.eia-picker-selected small { font-size: 10px; color: var(--eia-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.eia-picker-selected button { background: transparent !important; border: 0 !important; color: var(--eia-blue) !important; padding: 2px 4px !important; font-size: 10px !important; }
+.eia-picker-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 60;
+  max-height: 260px;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid #c9d7e4;
+  border-radius: 7px;
+  box-shadow: 0 12px 30px rgba(15,38,60,.16);
+}
+.eia-picker-option {
+  width: 100% !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 10px !important;
+  padding: 8px 10px !important;
+  background: #fff !important;
+  border: 0 !important;
+  border-bottom: 1px solid #eef2f6 !important;
+  border-radius: 0 !important;
+  text-align: left !important;
+  color: var(--eia-ink) !important;
+}
+.eia-picker-option:hover { background: #eef5fb !important; }
+.eia-picker-option .value { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.eia-picker-option b { font-size: 11px; color: var(--eia-navy); }
+.eia-picker-option small { font-size: 10px; color: var(--eia-muted); }
+.eia-picker-option .status { font-size: 9px; color: #60758a; border: 1px solid #dce5ed; border-radius: 3px; padding: 1px 4px; }
+.eia-picker-empty { padding: 12px; color: var(--eia-muted); font-size: 11px; text-align: center; }
+.eia-picker-hint { font-size: 10px; color: #7a8d9f; }
+
+/* Process context and related records */
+.eia-context-panel {
+  background: #f7fafc;
+  border: 1px solid #dce7f0;
+  border-left: 3px solid var(--eia-blue);
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin-top: 14px;
+}
+.eia-context-panel h4 { margin: 0 0 4px; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--eia-blue); }
+.eia-context-panel p { margin: 0; font-size: 12px; line-height: 1.5; color: #496074; }
+.eia-context-panel .links { margin-top: 7px; display: flex; gap: 10px; flex-wrap: wrap; }
+.eia-context-panel .links a { font-size: 11px; color: var(--eia-blue); font-weight: 600; text-decoration: none; }
+.eia-context-panel .links a:hover { text-decoration: underline; }
+
+.eia-related-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.eia-related-record {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  background: #fff;
+  border: 1px solid #d7e2ec;
+  border-radius: 4px;
+  font-size: 10px;
+  color: #3b5368;
+  text-decoration: none;
+}
+.eia-related-record:hover { border-color: var(--eia-blue); color: var(--eia-blue); }
+.eia-related-record b { font-weight: 700; }

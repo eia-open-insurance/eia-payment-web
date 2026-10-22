@@ -151,6 +151,28 @@ path, or status. An empty state and an evidence note are always shown, and a slo
 or failing Document API renders inside the card without blocking the payment
 record.
 
+## Related notifications
+
+The Overview also shows a **Related notifications** card for the selected
+payment. It calls
+`GET /api/v1/notifications?sourceType=PAYMENT&sourceId={paymentId}` with the
+tenant header and shows the linked count plus the newest three notifications by
+`createdAt`. Each row shows the notification number (linked to
+`/notifications?record={id}`), subject, delivery status, and created date. The
+card states that notifications are delivery artifacts: the payment is the source
+of the message, and Notifications owns routing, delivery, escalation, and
+acknowledgement. The card never creates, sends, or acknowledges a notification
+and never changes the payment.
+
+Rows are filtered to the exact `sourceType`/`sourceId` pair and sorted newest
+first, so a shared Notifications service cannot surface another record's
+messages. **View all notifications** opens
+`/notifications?sourceType=PAYMENT&sourceId={paymentId}` so the queue is scoped
+to this payment. Loading, empty, and error states stay inside the card, so a slow
+or failing Notifications API never blocks or replaces the payment record. The
+card refetches when another payment is selected, when the workbench is refreshed,
+and after a lifecycle write that may have produced a new message.
+
 ## Activity timeline
 
 The **Activity** tab shows the append-only event stream for the selected

@@ -3,6 +3,7 @@ import './ui.css';
 import './ui-overrides.css';
 import AllocationsTab from './AllocationsTab.jsx';
 import EntityPicker from './EntityPicker.jsx';
+import NotificationsCard from './NotificationsCard.jsx';
 import PaymentLifecycle from './PaymentLifecycle.jsx';
 import { api, problemMessage } from './api.js';
 import { formatMoney, shortId } from './format.js';
@@ -1415,6 +1416,12 @@ export default function App() {
                       </div>
                     )}
                   </section>
+
+                  <NotificationsCard
+                    key={`notifications-${selected.id}`}
+                    paymentId={selected.id}
+                    refreshToken={detailNonce + activityNonce}
+                  />
                 </section>
               )}
 

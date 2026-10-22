@@ -8,6 +8,24 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ### Added
 
+- Related notifications on the Payment Overview. Selecting a payment fetches
+  `GET /api/v1/notifications?sourceType=PAYMENT&sourceId={paymentId}` with the
+  tenant header and shows the linked count plus the newest three notifications
+  by `createdAt`: notification number (linked to
+  `/notifications?record={id}`), subject, delivery status, and created date.
+  Rows are filtered to the exact source pair and sorted newest first, so a
+  shared Notifications service cannot surface another record's messages; a bare
+  array and an `{items}` envelope are both accepted. **View all notifications**
+  opens `/notifications?sourceType=PAYMENT&sourceId={paymentId}`. Loading,
+  empty, and error states stay inside the card, so a 503 or an unreachable
+  Notifications service never blocks or replaces the payment record. The card
+  refetches when another payment is selected, when the workbench is refreshed,
+  and after a lifecycle write.
+- Playwright coverage for the source query and tenant header, the newest-three
+  ordering with unrelated rows excluded, count, subject/status/created fields,
+  record links, the filtered view-all link, the `{items}` envelope, the empty
+  state, a contained 503, and rendering the record while the Notifications API
+  is still in flight.
 - Payment allocation reversal. Active allocations in the **Allocations** tab
   offer **Reverse**, which opens a dialog requiring a non-blank reason of at
   most 500 characters and posts

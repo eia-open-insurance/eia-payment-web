@@ -267,6 +267,30 @@
   font-size: 11px;
 }
 
+.eia-lifecycle-terminal {
+  margin: 5px 0 0;
+  font-size: 11px;
+  color: var(--eia-red);
+}
+
+.eia-lifecycle-terminal strong {
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+}
+
+.eia-lifecycle-secondary {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-left: 8px;
+  border-left: 1px solid var(--eia-line);
+}
+
+.eia-lifecycle-secondary .eia-btn-secondary,
+.eia-lifecycle-secondary .eia-btn-danger {
+  white-space: nowrap;
+}
+
 .eia-lifecycle-scroll {
   overflow-x: auto;
   margin-top: 14px;

@@ -3,9 +3,13 @@ import {
   EXECUTION_LIFECYCLE,
   isLifecycleComplete,
   isOffPathStatus,
+  isTerminalStatus,
   lifecycleStep,
   lifecycleStepState,
-  nextLifecycleAction
+  nextLifecycleAction,
+  offPathNote,
+  secondaryLifecycleActions,
+  terminalStatusLabel
 } from './lifecycle.js';
 
 const STATE_LABEL = {
@@ -19,17 +23,20 @@ const STATE_LABEL = {
  * The selected payment's execution action bar and lifecycle timeline.
  *
  * The panel is deliberately state-only: App owns the PATCH, conflict reload, and
- * confirmation dialog. The single next happy-path action is the only button
- * here, so the workbench cannot accidentally skip a step or issue two
- * conflicting transitions from two controls.
+ * confirmation dialog. At most one happy-path action and the status's secondary
+ * terminal actions are rendered, so the workbench cannot accidentally skip a
+ * step or issue two conflicting transitions from two controls.
  */
 export default function PaymentLifecycle({ payment, busy, conflict, onAction, onReload }) {
   if (!payment) return null;
 
   const action = nextLifecycleAction(payment.status);
+  const secondaryActions = secondaryLifecycleActions(payment.status);
   const current = lifecycleStep(payment.status);
   const complete = isLifecycleComplete(payment.status);
   const offPath = isOffPathStatus(payment.status);
+  const terminal = isTerminalStatus(payment.status);
+  const terminalLabel = terminalStatusLabel(payment.status);
 
   return (
     <section
@@ -45,7 +52,13 @@ export default function PaymentLifecycle({ payment, busy, conflict, onAction, on
             {current ? ` · ${current.label}` : ' · off the happy path'}
             {payment.version !== undefined ? ` · version ${payment.version}` : ''}
             {complete ? ' · lifecycle complete' : ''}
+            {terminal ? ' · terminal status' : ''}
           </p>
+          {terminal && (
+            <p className="eia-lifecycle-terminal" data-testid="lifecycle-terminal">
+              Terminal status <strong>{payment.status}</strong> · {terminalLabel}
+            </p>
+          )}
         </div>
         <div className="eia-actions" data-testid="payment-action-bar">
           {action ? (
@@ -58,7 +71,32 @@ export default function PaymentLifecycle({ payment, busy, conflict, onAction, on
             >
               {busy ? 'Working…' : action.label}
             </button>
-          ) : (
+          ) : null}
+          {secondaryActions.length > 0 && (
+            <div
+              className="eia-lifecycle-secondary"
+              role="group"
+              aria-label="Terminal payment actions"
+              data-testid="payment-secondary-actions"
+            >
+              {secondaryActions.map((entry) => (
+                <button
+                  key={entry.id}
+                  type="button"
+                  className={entry.danger ? 'eia-btn-danger' : 'eia-btn-secondary'}
+                  data-testid={`payment-secondary-action-${entry.id}`}
+                  data-target={entry.to}
+                  onClick={() => onAction(entry)}
+                  disabled={busy}
+                  title={`${entry.label}: ${entry.from} → ${entry.to}`
+                    + `${entry.reasonRequired ? ' · reason required' : ' · reason optional'}`}
+                >
+                  {entry.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {!action && secondaryActions.length === 0 && (
             <span className="eia-badge ok" data-testid="payment-action-none">
               No action
             </span>
@@ -95,15 +133,15 @@ export default function PaymentLifecycle({ payment, busy, conflict, onAction, on
 
       {offPath && (
         <p className="eia-lifecycle-off-path" data-testid="lifecycle-off-path">
-          Status {payment.status} is not on the execution happy path; the workbench exposes no
-          automatic next action. The payment record still owns its state.
+          {offPathNote(payment.status)}
         </p>
       )}
 
       <p className="eia-lifecycle-context" data-testid="lifecycle-context">
         Payment owns execution. Claim and policy links are evidence of what is being paid; they
         never advance or control this lifecycle. Each action in the bar writes one status
-        transition through the Payment API using the payment's current version.
+        transition through the Payment API using the payment&apos;s current version. Cancel, void,
+        and stop are terminal and always require confirmation; void and stop also require a reason.
       </p>
 
       {conflict && (

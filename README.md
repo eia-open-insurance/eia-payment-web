@@ -54,8 +54,35 @@ and offers a manual reload.
 The timeline marks every step as done, current, or pending, and states that the
 payment owns execution: claim and policy links are evidence of what is being
 paid, not controllers of the status. `RECONCILED` completes the path; terminal
-exception states such as `FAILED`, `RETURNED`, `CANCELLED`, and `VOID` are
-off-path and expose no automatic next action.
+exception states such as `FAILED`, `RETURNED`, `CANCELLED`, `STOPPED`, and
+`VOID` are off-path, show their terminal outcome and an off-path note, and
+expose no forward action.
+
+## Terminal actions
+
+The action bar also exposes the secondary, terminal actions the Payment API
+supports for the current status:
+
+| Current status | Action | Target status | Reason |
+| --- | --- | --- | --- |
+| `DRAFT`, `PENDING_AUTHORITY`, `AUTHORIZED` | Cancel payment | `CANCELLED` | Optional |
+| `DRAFT`, `PENDING_AUTHORITY`, `AUTHORIZED` | Void payment | `VOID` | Required |
+| `APPROVED` | Void payment | `VOID` | Required |
+| `APPROVED` | Stop payment | `STOPPED` | Required |
+| `SCHEDULED` | Cancel payment | `CANCELLED` | Optional |
+| `SCHEDULED` | Void payment | `VOID` | Required |
+| `RETURNED`, `FAILED` | Cancel payment | `CANCELLED` | Optional |
+| Other statuses | none | — | — |
+
+Every terminal action opens a confirmation dialog naming the status change and
+the expected version. Void and stop refuse to submit a blank reason; cancel
+accepts an optional reason. A confirmed action sends one
+`PATCH /api/v1/payments/{id}/status` with
+`{ status, expectedVersion: payment.version, reason? }`, updates the selected
+record and its queue row from the response, and moves the timeline to the new
+terminal status with an off-path note. A rejected transition stays in the
+dialog with the API problem; a 409 is contained in the lifecycle panel and
+reloads the authoritative record so the retry uses the current version.
 
 ## Payment allocations
 

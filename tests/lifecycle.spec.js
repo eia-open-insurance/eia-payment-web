@@ -393,13 +393,317 @@ test('renders passed, current, and upcoming lifecycle steps and the ownership co
 });
 
 test('shows no happy-path action for an off-path terminal status', async ({ page }) => {
-  await installMocks(page, { status: 'FAILED', version: 2 });
+  await installMocks(page, { status: 'REVERSED', version: 2 });
   await openPayment(page);
 
   await expect(page.getByTestId('payment-action')).toHaveCount(0);
   await expect(page.getByTestId('payment-action-none')).toHaveText('No action');
+  await expect(page.getByTestId('payment-secondary-actions')).toHaveCount(0);
   await expect(page.getByTestId('lifecycle-off-path')).toContainText(
     'not on the execution happy path'
   );
   await expect(page.getByTestId('lifecycle-step-DRAFT')).toHaveAttribute('data-state', 'off-path');
+});
+
+const TERMINAL_ACTION_CASES = [
+  {
+    status: 'DRAFT',
+    happy: 'Submit for authority',
+    actions: [['cancel', 'CANCELLED'], ['void', 'VOID']]
+  },
+  {
+    status: 'PENDING_AUTHORITY',
+    happy: 'Authorize',
+    actions: [['cancel', 'CANCELLED'], ['void', 'VOID']]
+  },
+  {
+    status: 'AUTHORIZED',
+    happy: 'Approve',
+    actions: [['cancel', 'CANCELLED'], ['void', 'VOID']]
+  },
+  {
+    status: 'APPROVED',
+    happy: 'Schedule',
+    actions: [['void', 'VOID'], ['stop', 'STOPPED']]
+  },
+  {
+    status: 'SCHEDULED',
+    happy: 'Send',
+    actions: [['cancel', 'CANCELLED'], ['void', 'VOID']]
+  },
+  {
+    status: 'RETURNED',
+    happy: null,
+    actions: [['cancel', 'CANCELLED']]
+  },
+  {
+    status: 'FAILED',
+    happy: null,
+    actions: [['cancel', 'CANCELLED']]
+  }
+];
+
+for (const { status, happy, actions } of TERMINAL_ACTION_CASES) {
+  test(`maps ${status} to its ${actions.length} terminal action(s)`, async ({ page }) => {
+    await installMocks(page, { status, version: 3 });
+    await openPayment(page);
+
+    await expect(page.getByTestId('payment-secondary-actions')).toBeVisible();
+    await expect(page.locator('[data-testid^="payment-secondary-action-"]'))
+      .toHaveCount(actions.length);
+
+    for (const [id, target] of actions) {
+      const button = page.getByTestId(`payment-secondary-action-${id}`);
+      await expect(button).toHaveText(`${id[0].toUpperCase()}${id.slice(1)} payment`);
+      await expect(button).toHaveAttribute('data-target', target);
+      await expect(button).toBeEnabled();
+    }
+
+    if (happy) {
+      await expect(page.getByTestId('payment-action')).toHaveText(happy);
+      await expect(page.getByTestId('payment-action-none')).toHaveCount(0);
+    } else {
+      await expect(page.getByTestId('payment-action')).toHaveCount(0);
+      await expect(page.getByTestId('payment-action-none')).toHaveCount(0);
+    }
+  });
+}
+
+const NO_TERMINAL_ACTION_CASES = [
+  ['SUBMITTED', 'Accept'],
+  ['ACCEPTED', 'Process'],
+  ['PROCESSING', 'Mark paid'],
+  ['PAID', 'Reconcile'],
+  ['PARTIALLY_PAID', null],
+  ['RECONCILED', null],
+  ['REJECTED', null],
+  ['CANCELLED', null],
+  ['VOID', null],
+  ['STOPPED', null],
+  ['REVERSED', null],
+  ['ESCHEATED', null]
+];
+
+for (const [status, happy] of NO_TERMINAL_ACTION_CASES) {
+  test(`offers no terminal actions for ${status}`, async ({ page }) => {
+    await installMocks(page, { status, version: 5 });
+    await openPayment(page);
+
+    await expect(page.getByTestId('payment-secondary-actions')).toHaveCount(0);
+    await expect(page.locator('[data-testid^="payment-secondary-action-"]')).toHaveCount(0);
+
+    if (happy) {
+      await expect(page.getByTestId('payment-action')).toHaveText(happy);
+      await expect(page.getByTestId('payment-action-none')).toHaveCount(0);
+    } else {
+      await expect(page.getByTestId('payment-action')).toHaveCount(0);
+      await expect(page.getByTestId('payment-action-none')).toHaveText('No action');
+    }
+  });
+}
+
+test('cancels with confirmation, an optional reason, and shows the terminal off-path state', async ({ page }) => {
+  const state = await installMocks(page, { status: 'SCHEDULED', version: 4 });
+  await openPayment(page);
+
+  await page.getByTestId('payment-secondary-action-cancel').click();
+  const dialog = page.getByTestId('payment-action-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Cancel payment?' })).toBeVisible();
+  await expect(dialog).toContainText('SCHEDULED → CANCELLED');
+  await expect(dialog.getByTestId('lifecycle-expected-version')).toHaveText('4');
+  await expect(dialog.getByTestId('lifecycle-confirm-description')).toContainText(
+    'Cancelling is terminal'
+  );
+  await expect(dialog.getByTestId('lifecycle-reason-requirement')).toHaveText('Optional');
+  await expect(dialog.getByTestId('lifecycle-reason')).not.toHaveAttribute('required');
+  // No write happens before the operator confirms, and dismissing writes nothing.
+  expect(state.patches).toHaveLength(0);
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(state.patches).toHaveLength(0);
+
+  await page.getByTestId('payment-secondary-action-cancel').click();
+  await dialog.getByTestId('lifecycle-reason').fill('Duplicate claim request');
+  await dialog.getByTestId('lifecycle-confirm-submit').click();
+
+  await expect(dialog).toBeHidden();
+  expect(state.patches).toHaveLength(1);
+  expect(state.patches[0]).toEqual({
+    path: `/api/v1/payments/${PAYMENT_ID}/status`,
+    method: 'PATCH',
+    tenant: TENANT,
+    payload: {
+      status: 'CANCELLED',
+      expectedVersion: 4,
+      reason: 'Duplicate claim request'
+    }
+  });
+
+  await expect(page.getByTestId('payment-status')).toHaveText('CANCELLED');
+  await expect(page.getByRole('status')).toContainText('is now CANCELLED');
+  await expect(page.getByRole('status')).toContainText('terminal status');
+  await expect(page.getByTestId('lifecycle-current')).toContainText('terminal status');
+  await expect(page.getByTestId('lifecycle-terminal')).toContainText('CANCELLED');
+  await expect(page.getByTestId('lifecycle-terminal')).toContainText('Payment cancelled');
+  await expect(page.getByTestId('lifecycle-off-path')).toContainText(
+    'not on the execution happy path'
+  );
+  await expect(page.getByTestId('lifecycle-off-path')).toContainText('terminal');
+  await expect(page.getByTestId('lifecycle-step-DRAFT')).toHaveAttribute('data-state', 'off-path');
+  await expect(page.getByTestId('lifecycle-step-RECONCILED')).toHaveAttribute(
+    'data-state',
+    'off-path'
+  );
+  await expect(page.getByTestId('payment-secondary-actions')).toHaveCount(0);
+  await expect(page.getByTestId('payment-action')).toHaveCount(0);
+  await expect(page.getByTestId('payment-action-none')).toHaveText('No action');
+  await expect(
+    page.getByRole('button', { name: 'Open record PAY-2026-0044721' })
+  ).toContainText('CANCELLED');
+});
+
+test('cancels a failed payment without a reason and omits the reason from the payload', async ({ page }) => {
+  const state = await installMocks(page, { status: 'FAILED', version: 6 });
+  await openPayment(page);
+
+  await page.getByTestId('payment-secondary-action-cancel').click();
+  const dialog = page.getByTestId('payment-action-dialog');
+  await expect(dialog.getByTestId('lifecycle-reason-requirement')).toHaveText('Optional');
+  await dialog.getByTestId('lifecycle-confirm-submit').click();
+
+  await expect(dialog).toBeHidden();
+  expect(state.patches).toHaveLength(1);
+  expect(state.patches[0].payload).toEqual({
+    status: 'CANCELLED',
+    expectedVersion: 6
+  });
+  expect(state.patches[0].payload).not.toHaveProperty('reason');
+  await expect(page.getByTestId('payment-status')).toHaveText('CANCELLED');
+  await expect(page.getByTestId('lifecycle-terminal')).toContainText('Payment cancelled');
+  await expect(page.getByTestId('lifecycle-off-path')).toContainText('terminal');
+});
+
+test('requires a reason before voiding and sends the trimmed reason', async ({ page }) => {
+  const state = await installMocks(page, { status: 'DRAFT', version: 0 });
+  await openPayment(page);
+
+  await page.getByTestId('payment-secondary-action-void').click();
+  const dialog = page.getByTestId('payment-action-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Void payment?' })).toBeVisible();
+  await expect(dialog.getByTestId('lifecycle-confirm-description')).toContainText(
+    'Voiding is terminal'
+  );
+  await expect(dialog.getByTestId('lifecycle-reason-requirement')).toHaveText('Required');
+  await expect(dialog.getByTestId('lifecycle-reason')).toHaveAttribute('required', '');
+
+  await dialog.getByTestId('lifecycle-confirm-submit').click();
+  await expect(dialog.getByTestId('lifecycle-action-error')).toHaveText(
+    'A reason is required to void a payment.'
+  );
+  expect(state.patches).toHaveLength(0);
+  await expect(dialog).toBeVisible();
+
+  await dialog.getByTestId('lifecycle-reason').fill('   ');
+  await dialog.getByTestId('lifecycle-confirm-submit').click();
+  await expect(dialog.getByTestId('lifecycle-action-error')).toHaveText(
+    'A reason is required to void a payment.'
+  );
+  expect(state.patches).toHaveLength(0);
+
+  await dialog.getByTestId('lifecycle-reason').fill('  Wrong payee on the instruction  ');
+  await expect(dialog.getByTestId('lifecycle-action-error')).toHaveCount(0);
+  await dialog.getByTestId('lifecycle-confirm-submit').click();
+
+  await expect(dialog).toBeHidden();
+  expect(state.patches).toHaveLength(1);
+  expect(state.patches[0].payload).toEqual({
+    status: 'VOID',
+    expectedVersion: 0,
+    reason: 'Wrong payee on the instruction'
+  });
+  await expect(page.getByTestId('payment-status')).toHaveText('VOID');
+  await expect(page.getByTestId('payment-action')).toHaveCount(0);
+  await expect(page.getByTestId('payment-secondary-actions')).toHaveCount(0);
+  await expect(page.getByTestId('lifecycle-terminal')).toContainText('Payment voided');
+  await expect(page.getByTestId('lifecycle-off-path')).toContainText('not on the execution happy path');
+  await expect(
+    page.getByRole('button', { name: 'Open record PAY-2026-0044721' })
+  ).toContainText('VOID');
+});
+
+test('stops an approved payment only after a reason is confirmed', async ({ page }) => {
+  const state = await installMocks(page, { status: 'APPROVED', version: 2 });
+  await openPayment(page);
+
+  await expect(page.getByTestId('payment-action')).toHaveText('Schedule');
+  await expect(page.getByTestId('payment-secondary-action-void')).toBeVisible();
+  await page.getByTestId('payment-secondary-action-stop').click();
+
+  const dialog = page.getByTestId('payment-action-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Stop payment?' })).toBeVisible();
+  await expect(dialog).toContainText('APPROVED → STOPPED');
+  await expect(dialog.getByTestId('lifecycle-confirm-description')).toContainText(
+    'Stopping is terminal'
+  );
+  await expect(dialog.getByTestId('lifecycle-reason-requirement')).toHaveText('Required');
+  expect(state.patches).toHaveLength(0);
+
+  await dialog.getByTestId('lifecycle-reason').fill('Payment run cancelled by treasury');
+  await dialog.getByTestId('lifecycle-confirm-submit').click();
+
+  await expect(dialog).toBeHidden();
+  expect(state.patches).toHaveLength(1);
+  expect(state.patches[0].payload).toEqual({
+    status: 'STOPPED',
+    expectedVersion: 2,
+    reason: 'Payment run cancelled by treasury'
+  });
+  await expect(page.getByTestId('payment-status')).toHaveText('STOPPED');
+  await expect(page.getByTestId('payment-action')).toHaveCount(0);
+  await expect(page.getByTestId('payment-secondary-actions')).toHaveCount(0);
+  await expect(page.getByTestId('lifecycle-terminal')).toContainText('Payment stopped');
+  await expect(page.getByTestId('lifecycle-step-APPROVED')).toHaveAttribute(
+    'data-state',
+    'off-path'
+  );
+  await expect(page.getByTestId('lifecycle-off-path')).toContainText('not on the execution happy path');
+});
+
+test('contains a terminal-action API error in the dialog and retries after the problem clears', async ({ page }) => {
+  const state = await installMocks(page, { status: 'AUTHORIZED', version: 1 });
+  state.patchStatus = 400;
+  state.patchBody = {
+    code: 'INVALID_STATUS_TRANSITION',
+    message: 'Cannot transition payment from AUTHORIZED to VOID'
+  };
+  await openPayment(page);
+
+  await page.getByTestId('payment-secondary-action-void').click();
+  const dialog = page.getByTestId('payment-action-dialog');
+  await dialog.getByTestId('lifecycle-reason').fill('Duplicate payment');
+  await dialog.getByTestId('lifecycle-confirm-submit').click();
+
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByTestId('lifecycle-action-error')).toContainText(
+    'INVALID_STATUS_TRANSITION: Cannot transition payment from AUTHORIZED to VOID'
+  );
+  expect(state.patches).toHaveLength(1);
+  await expect(page.getByTestId('payment-status')).toHaveText('AUTHORIZED');
+  await expect(page.getByTestId('lifecycle-conflict')).toHaveCount(0);
+
+  state.patchStatus = 200;
+  await dialog.getByTestId('lifecycle-confirm-submit').click();
+
+  await expect(dialog).toBeHidden();
+  expect(state.patches).toHaveLength(2);
+  expect(state.patches[1].payload).toEqual({
+    status: 'VOID',
+    expectedVersion: 1,
+    reason: 'Duplicate payment'
+  });
+  await expect(page.getByTestId('payment-status')).toHaveText('VOID');
+  await expect(page.getByTestId('lifecycle-terminal')).toContainText('Payment voided');
 });

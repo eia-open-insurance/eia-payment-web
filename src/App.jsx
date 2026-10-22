@@ -8,12 +8,18 @@ import { api, problemMessage } from './api.js';
 import { formatMoney, shortId } from './format.js';
 import {
   EXECUTION_LIFECYCLE,
+  actionRequiresReason,
   confirmationCopy,
   executionLabel,
+  isTerminalStatus,
   lifecycleIndex,
   nextLifecycleAction,
+  reasonFieldCopy,
+  reasonValidationError,
+  secondaryLifecycleActions,
   statusChangeEndpoint,
-  statusChangePayload
+  statusChangePayload,
+  terminalStatusLabel
 } from './lifecycle.js';
 import { navigate, recordHref } from './navigation.js';
 import { partyEndpoint, partyRecordLabel } from './party.js';
@@ -117,6 +123,15 @@ function statusTone(status) {
   }
   if (['DRAFT', 'PENDING_AUTHORITY'].includes(status)) return 'amber';
   return 'blue';
+}
+
+/** Success notice for a status write, calling out a terminal outcome. */
+function statusNotice(paymentNumber, status) {
+  const terminal = isTerminalStatus(status);
+  return `${paymentNumber} is now ${status}.`
+    + (terminal
+      ? ` ${terminalStatusLabel(status)}; this terminal status is off the execution happy path.`
+      : '');
 }
 
 /**
@@ -767,6 +782,12 @@ export default function App() {
    */
   async function performAction(payment, action, reason, { fromDialog = false } = {}) {
     if (!payment || !action || busyId) return;
+    const reasonError = reasonValidationError(action, reason);
+    if (reasonError) {
+      if (fromDialog) setActionError(reasonError);
+      else setError(reasonError);
+      return;
+    }
     setBusyId(payment.id);
     setError('');
     setNotice('');
@@ -807,13 +828,17 @@ export default function App() {
       const updated = body && typeof body === 'object' && body.id ? body : null;
       if (updated) {
         applyPaymentRead(updated);
-        setNotice(
-          `${updated.paymentNumber || payment.paymentNumber} is now ${updated.status || action.to}.`
-        );
+        setNotice(statusNotice(
+          updated.paymentNumber || payment.paymentNumber,
+          updated.status || action.to
+        ));
       } else {
         const reload = await reloadPayment(payment.id);
         if (reload.ok) {
-          setNotice(`${payment.paymentNumber} is now ${reload.payment.status || action.to}.`);
+          setNotice(statusNotice(
+            payment.paymentNumber,
+            reload.payment.status || action.to
+          ));
         } else {
           setError(`The payment was updated but could not be reloaded (${reload.error}).`);
         }
@@ -857,6 +882,11 @@ export default function App() {
   function confirmAction(event) {
     event.preventDefault();
     if (!selected || !pendingAction || busyId) return;
+    const reasonError = reasonValidationError(pendingAction, actionReason);
+    if (reasonError) {
+      setActionError(reasonError);
+      return;
+    }
     performAction(selected, pendingAction, actionReason, { fromDialog: true });
   }
 
@@ -875,8 +905,11 @@ export default function App() {
   }
 
   const action = selected ? nextLifecycleAction(selected.status) : null;
+  const secondaryActions = selected ? secondaryLifecycleActions(selected.status) : [];
   const currentIndex = selected ? lifecycleIndex(selected.status) : -1;
   const confirmCopy = pendingAction ? confirmationCopy(pendingAction) : null;
+  const pendingReasonRequired = pendingAction ? actionRequiresReason(pendingAction) : false;
+  const pendingReasonCopy = pendingAction ? reasonFieldCopy(pendingAction) : null;
   const selectedPayeeLabel = partyLabel(payeeParties, selected?.payeePartyId);
   const selectedPayeeSecondary = partySecondary(payeeParties, selected?.payeePartyId);
   const selectedPayeeText = (selected?.payeePartyId && partyDetails[selected.payeePartyId])
@@ -1223,7 +1256,13 @@ export default function App() {
                         <dt>Current state</dt>
                         <dd>{selected.status}</dd>
                         <dt>Next action</dt>
-                        <dd>{action ? action.label : '—'}</dd>
+                        <dd>
+                          {action
+                            ? action.label
+                            : secondaryActions.length > 0
+                              ? secondaryActions.map((entry) => entry.label).join(' / ')
+                              : '—'}
+                        </dd>
                         <dt>Execution</dt>
                         <dd>{executionLabel(selected.status)}</dd>
                         <dt>Created</dt>
@@ -1379,8 +1418,9 @@ export default function App() {
                   <p className="eia-muted" style={{ marginTop: 0 }}>
                     The Payment API owns the full execution path. Every step below is one
                     PATCH /api/v1/payments/{'{id}'}/status with a target status, the payment's
-                    expectedVersion, and an optional reason. Mark paid and Reconcile require
-                    confirmation before the write.
+                    expectedVersion, and an optional reason. Mark paid, Reconcile, and the terminal
+                    cancel, void, and stop actions require confirmation before the write; void and
+                    stop also require a reason.
                   </p>
                   <div className="eia-table-wrap">
                     <table className="eia-table">
@@ -1414,8 +1454,12 @@ export default function App() {
                   </div>
                   {currentIndex < 0 && (
                     <p className="eia-muted">
-                      Status {selected.status} is not on the forward execution path; no further
-                      lifecycle action is exposed.
+                      Status {selected.status} is terminal and off the forward execution path; the
+                      forward lifecycle is closed.
+                      {secondaryActions.length > 0
+                        ? ` The terminal ${secondaryActions.map((entry) => entry.label).join(' / ')}`
+                          + ' action is still available above.'
+                        : ' No further lifecycle action is exposed.'}
                     </p>
                   )}
                   <section
@@ -1426,14 +1470,25 @@ export default function App() {
                   >
                     <div className="eia-section-title" style={{ marginTop: 0 }}>
                       <h2>Next lifecycle action</h2>
-                      <span className="eia-muted">{action ? action.label : 'No action'}</span>
+                      <span className="eia-muted">
+                        {action
+                          ? action.label
+                          : secondaryActions.length > 0
+                            ? 'Terminal action available'
+                            : 'No action'}
+                      </span>
                     </div>
                     <p className="eia-muted" style={{ margin: 0 }}>
                       {action
                         ? `${action.label} sends PATCH /api/v1/payments/{id}/status with status `
                           + `${action.to} and expectedVersion ${selected.version}`
                           + `${action.confirm ? ', after confirmation' : ''}.`
-                        : `No lifecycle action is exposed for status ${selected.status}.`}
+                        : `No forward lifecycle action is exposed for status ${selected.status}.`}
+                      {secondaryActions.length > 0
+                        ? ` Terminal actions: ${secondaryActions.map((entry) => (
+                          `${entry.label} → ${entry.to}${entry.reasonRequired ? ' (reason required)' : ' (reason optional)'}`
+                        )).join('; ')}. Each is confirmed and sends one versioned PATCH.`
+                        : ''}
                     </p>
                   </section>
                 </section>
@@ -1677,22 +1732,44 @@ export default function App() {
               <dd>{selected.status} → {pendingAction.to}</dd>
               <dt>Expected version</dt>
               <dd data-testid="lifecycle-expected-version">{selected.version ?? '—'}</dd>
+              <dt>Reason</dt>
+              <dd data-testid="lifecycle-reason-requirement">
+                {pendingReasonRequired ? 'Required' : 'Optional'}
+              </dd>
             </dl>
 
-            <form onSubmit={confirmAction} style={{ marginTop: 16 }} data-testid="lifecycle-confirm-form">
+            <form
+              onSubmit={confirmAction}
+              style={{ marginTop: 16 }}
+              data-testid="lifecycle-confirm-form"
+              noValidate
+            >
               <div className="eia-field">
-                <label htmlFor="lifecycle-reason">Reason (optional)</label>
+                <label htmlFor="lifecycle-reason">{pendingReasonCopy.label}</label>
                 <textarea
                   id="lifecycle-reason"
                   data-testid="lifecycle-reason"
                   value={actionReason}
-                  onChange={(event) => setActionReason(event.target.value)}
-                  placeholder="For example the bank reference or reconciliation note"
+                  onChange={(event) => {
+                    setActionReason(event.target.value);
+                    if (actionError) setActionError('');
+                  }}
+                  placeholder={pendingReasonCopy.placeholder}
                   rows={3}
-                  maxLength={500}
+                  maxLength={200}
+                  required={pendingReasonRequired}
+                  aria-required={pendingReasonRequired}
+                  aria-describedby="lifecycle-reason-hint"
                   disabled={busyId === selected.id}
                   autoFocus
                 />
+                <span
+                  className="eia-muted"
+                  id="lifecycle-reason-hint"
+                  data-testid="lifecycle-reason-hint"
+                >
+                  {pendingReasonCopy.hint}
+                </span>
               </div>
 
               {actionError && (

@@ -8,6 +8,23 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ### Added
 
+- Secondary terminal actions on the payment lifecycle panel. `DRAFT`,
+  `PENDING_AUTHORITY`, `AUTHORIZED`, and `SCHEDULED` offer **Cancel payment**
+  (`CANCELLED`, optional reason) and **Void payment** (`VOID`, required
+  reason); `APPROVED` offers **Void payment** and **Stop payment** (`STOPPED`,
+  required reason); `RETURNED` and `FAILED` offer **Cancel payment**. Every
+  action opens a confirmation dialog showing the transition and expected
+  version, refuses a blank reason for void/stop, and sends one
+  `PATCH /api/v1/payments/{id}/status` with
+  `{ status, expectedVersion, reason? }`. The response updates the selected
+  record and its queue row, and the timeline shows the terminal status with an
+  off-path note. API errors stay in the dialog; a 409 reloads the authoritative
+  record in the lifecycle panel.
+- Playwright coverage for the status-to-terminal-action mapping, the absence of
+  terminal actions on later statuses, the PATCH payloads and version, cancel's
+  optional reason and void/stop's required reason, confirmation dismissal, the
+  terminal status and off-path timeline note, queue updates, and a rejected
+  terminal transition retried from the dialog.
 - Payment execution lifecycle action bar and timeline: the selected payment
   shows the full `DRAFT` → `PENDING_AUTHORITY` → `AUTHORIZED` → `APPROVED` →
   `SCHEDULED` → `SUBMITTED` → `ACCEPTED` → `PROCESSING` → `PAID` →

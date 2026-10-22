@@ -452,10 +452,10 @@ test('reverses an allocation with a required reason and posts the trimmed payloa
   );
   expect(state.reversals).toHaveLength(0);
 
-  // The reason field is bounded to the API's 500-character maximum.
+  // The reason field is bounded to the API's 200-character maximum.
   await expect(dialog.getByTestId('allocation-reverse-reason')).toHaveAttribute(
     'maxlength',
-    '500'
+    '200'
   );
 
   await dialog.getByTestId('allocation-reverse-reason').fill('  Duplicate settlement  ');

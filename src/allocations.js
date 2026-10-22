@@ -43,7 +43,7 @@ export const ALLOCATION_SCALE = 10000;
  * operator supplies when reversing an allocation; the same text is rendered
  * back on the ledger with the reversal date.
  */
-export const ALLOCATION_REVERSAL_REASON_MAX = 500;
+export const ALLOCATION_REVERSAL_REASON_MAX = 200;
 
 const TARGET_META = {
   DIRECT_CLAIM: {
@@ -246,7 +246,7 @@ export function allocationReversalPayload(reason) {
 
 /**
  * Client-side mirror of the API reversal rule: the reason is required, is
- * trimmed, and is no longer than the server's 500-character bound.
+ * trimmed, and is no longer than the server's 200-character bound.
  */
 export function validateAllocationReversalReason(reason) {
   const value = String(reason || '').trim();

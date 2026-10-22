@@ -251,6 +251,11 @@
   gap: 12px;
 }
 
+.eia-lifecycle-head-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .eia-lifecycle-head .eia-actions {
   flex: 0 0 auto;
 }
@@ -265,6 +270,42 @@
   color: var(--eia-navy);
   font-family: "Cascadia Code", Consolas, monospace;
   font-size: 11px;
+}
+
+/*
+ * Current status reason: the reason recorded with the payment's latest status
+ * transition, plus the transition context when the activity feed supplies it.
+ */
+.eia-lifecycle-reason {
+  margin: 8px 0 0;
+  padding: 7px 10px;
+  background: #f7fafc;
+  border: 1px solid var(--eia-line);
+  border-left: 3px solid var(--eia-blue);
+  border-radius: 6px;
+  color: var(--eia-navy);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.eia-lifecycle-reason strong {
+  font-size: 10px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--eia-blue-dark);
+}
+
+.eia-lifecycle-reason-context {
+  color: var(--eia-muted);
+}
+
+.eia-status-reason-context {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .eia-lifecycle-terminal {

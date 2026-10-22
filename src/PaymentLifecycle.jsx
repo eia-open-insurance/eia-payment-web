@@ -12,6 +12,7 @@ import {
   secondaryLifecycleActions,
   terminalStatusLabel
 } from './lifecycle.js';
+import { statusReasonView } from './statusReason.js';
 
 const STATE_LABEL = {
   passed: 'Done',
@@ -28,7 +29,14 @@ const STATE_LABEL = {
  * actions are rendered, so the workbench cannot accidentally skip a step or
  * issue two conflicting transitions from two controls.
  */
-export default function PaymentLifecycle({ payment, busy, conflict, onAction, onReload }) {
+export default function PaymentLifecycle({
+  payment,
+  activity = [],
+  busy,
+  conflict,
+  onAction,
+  onReload
+}) {
   if (!payment) return null;
 
   const action = nextLifecycleAction(payment.status);
@@ -39,6 +47,7 @@ export default function PaymentLifecycle({ payment, busy, conflict, onAction, on
   const terminal = isTerminalStatus(payment.status);
   const terminalLabel = terminalStatusLabel(payment.status);
   const postPayment = postPaymentNote(payment.status);
+  const reasonView = statusReasonView(payment, activity);
 
   return (
     <section
@@ -47,7 +56,7 @@ export default function PaymentLifecycle({ payment, busy, conflict, onAction, on
       data-testid="payment-lifecycle"
     >
       <div className="eia-lifecycle-head">
-        <div>
+        <div className="eia-lifecycle-head-main">
           <h3>Execution lifecycle</h3>
           <p className="eia-lifecycle-current" data-testid="lifecycle-current" data-version={payment.version}>
             Current status <strong>{payment.status || '—'}</strong>
@@ -59,6 +68,19 @@ export default function PaymentLifecycle({ payment, busy, conflict, onAction, on
           {terminal && (
             <p className="eia-lifecycle-terminal" data-testid="lifecycle-terminal">
               Terminal status <strong>{payment.status}</strong> · {terminalLabel}
+            </p>
+          )}
+          {reasonView.reason && (
+            <p className="eia-lifecycle-reason" data-testid="lifecycle-status-reason">
+              <strong>Status reason</strong>: {reasonView.reason}
+              {reasonView.context ? (
+                <span
+                  className="eia-lifecycle-reason-context"
+                  data-testid="lifecycle-status-reason-context"
+                >
+                  {' · '}{reasonView.context}
+                </span>
+              ) : null}
             </p>
           )}
         </div>

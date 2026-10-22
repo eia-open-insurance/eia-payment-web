@@ -53,6 +53,7 @@ import {
   eventTypeLabel,
   payloadFacts
 } from './events.js';
+import { statusReasonView } from './statusReason.js';
 
 const PARTY_SEARCH_ENDPOINT = '/api/v1/parties/search';
 const QUEUE_FILTER_PLACEHOLDER = 'Filter payments by number, type, payee, or status…';
@@ -919,6 +920,9 @@ export default function App() {
   const action = selected ? nextLifecycleAction(selected.status) : null;
   const secondaryActions = selected ? secondaryLifecycleActions(selected.status) : [];
   const currentIndex = selected ? lifecycleIndex(selected.status) : -1;
+  const selectedStatusReason = selected
+    ? statusReasonView(selected, activity)
+    : { reason: '', transition: null, context: '' };
   const confirmCopy = pendingAction ? confirmationCopy(pendingAction) : null;
   const pendingReasonRequired = pendingAction ? actionRequiresReason(pendingAction) : false;
   const pendingReasonCopy = pendingAction ? reasonFieldCopy(pendingAction) : null;
@@ -953,6 +957,7 @@ export default function App() {
         ['Payment number', selected.paymentNumber],
         ['Payment type', selected.paymentType],
         ['Status', selected.status],
+        ...(selectedStatusReason.reason ? [['Status reason', selectedStatusReason.reason]] : []),
         ['Amount', selected.amount],
         ['Currency', selected.currency],
         ['Payee party', selected.payeePartyId],
@@ -1140,6 +1145,7 @@ export default function App() {
 
               <PaymentLifecycle
                 payment={selected}
+                activity={activity}
                 busy={busyId === selected.id}
                 conflict={conflict}
                 onAction={startAction}
@@ -1522,7 +1528,12 @@ export default function App() {
                       </thead>
                       <tbody>
                         {detailRows.map(([label, value]) => (
-                          <tr key={label}>
+                          <tr
+                            key={label}
+                            data-testid={label === 'Status reason'
+                              ? 'detail-status-reason-row'
+                              : undefined}
+                          >
                             <td>{label}</td>
                             <td>
                               {label === 'Payee party' && value ? (
@@ -1531,6 +1542,18 @@ export default function App() {
                                   label={selectedPayeeText}
                                   testId="detail-row-payee-link"
                                 />
+                              ) : label === 'Status reason' ? (
+                                <div>
+                                  <span data-testid="detail-status-reason">{value}</span>
+                                  {selectedStatusReason.context ? (
+                                    <span
+                                      className="eia-status-reason-context eia-muted"
+                                      data-testid="detail-status-reason-context"
+                                    >
+                                      Latest transition {selectedStatusReason.context}
+                                    </span>
+                                  ) : null}
+                                </div>
                               ) : (value === null || value === undefined || value === '' ? '—' : value)}
                             </td>
                           </tr>
@@ -1540,7 +1563,8 @@ export default function App() {
                   </div>
                   <p className="eia-muted">
                     Amounts are stored as numeric(19,4); currency is an ISO 4217 code and the payment
-                    type follows SPEC 11.7.5.
+                    type follows SPEC 11.7.5. The status reason is the optional reason recorded with
+                    the latest status transition; a later transition without a reason clears it.
                   </p>
                 </section>
               )}

@@ -8,6 +8,21 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ### Added
 
+- Payment status reason. The nullable `statusReason` returned by the Payment
+  API (`PAY-2026` status writes store the optional PATCH `reason` there, capped
+  at 200 characters) is normalized by trimming, collapsing whitespace, and
+  ignoring blank or non-text values. **Payment Details** shows a **Status
+  reason** row only when a reason is present, together with the latest
+  transition context (`from → to`, UTC timestamp, and row version) from the
+  latest matching `payment.payment.status-changed` activity event; the
+  lifecycle panel shows the same reason and context beside the current status.
+  When the activity feed is slow, unavailable, or does not yet contain the
+  transition, the context falls back to the payment's current status, version,
+  and `updatedAt`. An older projection that omits `statusReason` entirely falls
+  back to the reason in the latest transition event. Playwright coverage covers
+  normalization (whitespace and the 200-character cap), the present and absent
+  states in both views, the transition-derived context, the payment-record
+  fallback, and the legacy projection fallback.
 - Post-payment controls on the lifecycle action bar. `PAID` and
   `PARTIALLY_PAID` offer **Return payment** (`RETURNED`) and **Reverse payment**
   (`REVERSED`); `RECONCILED` offers **Escheat payment** (`ESCHEATED`); and

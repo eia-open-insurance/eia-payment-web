@@ -8,6 +8,28 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ### Added
 
+- Payment allocation reversal. Active allocations in the **Allocations** tab
+  offer **Reverse**, which opens a dialog requiring a non-blank reason of at
+  most 500 characters and posts
+  `POST /api/v1/payments/{paymentId}/allocations/{allocationId}/reverse` with
+  `{ reason }`. A successful reversal stamps `reversedAt` and `reversalReason`
+  on the split, which stays in the ledger with its original target, component,
+  and amount; the row shows a **REVERSED** badge, reason, and date, and no
+  longer offers the action. Reversal is append-only and never deletes the
+  allocation or changes the payment amount, approval path, or status. The
+  summary now reports **net allocated** (recorded minus reversed), the
+  **reversed** total, and the **remaining** balance, with the allocation and
+  reversed counts under net allocated; the totals accept the API's
+  `totalAllocated`, `totalReversed`, `netAllocated`, and `unallocated` members
+  and otherwise fall back to the visible rows. A 409 on reversal (for example
+  an already-reversed split) keeps the dialog open with the API problem and
+  reload guidance, and every mutation refreshes the activity timeline.
+- Playwright coverage for the reversal endpoint, tenant header, and trimmed
+  payload; the required reason and local rejection before POST; the reversed
+  badge, reason, date, and preserved original split; the active/reversed action
+  gating; the net, reversed, and remaining summary values; the unchanged
+  payment amount; and a repeated-reversal 409 that stays in the dialog without
+  mutating the ledger.
 - Payment status reason. The nullable `statusReason` returned by the Payment
   API (`PAY-2026` status writes store the optional PATCH `reason` there, capped
   at 200 characters) is normalized by trimming, collapsing whitespace, and

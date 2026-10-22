@@ -38,6 +38,13 @@ export const ALLOCATION_COMPONENTS = [
 /** Storage scale for money: the Payment API uses numeric(19,4). */
 export const ALLOCATION_SCALE = 10000;
 
+/**
+ * Longest reversal reason the Payment API accepts. The reason is free text the
+ * operator supplies when reversing an allocation; the same text is rendered
+ * back on the ledger with the reversal date.
+ */
+export const ALLOCATION_REVERSAL_REASON_MAX = 500;
+
 const TARGET_META = {
   DIRECT_CLAIM: {
     label: 'Direct claim',
@@ -102,6 +109,12 @@ export function componentLabel(component) {
 /** GET/POST /api/v1/payments/{paymentId}/allocations */
 export function allocationEndpoint(paymentId) {
   return `/api/v1/payments/${encodeURIComponent(paymentId)}/allocations`;
+}
+
+/** POST /api/v1/payments/{paymentId}/allocations/{allocationId}/reverse */
+export function allocationReverseEndpoint(paymentId, allocationId) {
+  const base = allocationEndpoint(paymentId);
+  return `${base}/${encodeURIComponent(String(allocationId || '').trim())}/reverse`;
 }
 
 /** Accepts a bare array or an `{ items }` / `{ allocations }` envelope. */
@@ -185,6 +198,65 @@ export function allocationCreatedAt(row) {
   return String(row.createdAt || row.created || row.allocationDate || '').trim();
 }
 
+function reversalDetail(row) {
+  if (!row || typeof row !== 'object' || !row.reversal || typeof row.reversal !== 'object') {
+    return null;
+  }
+  return row.reversal;
+}
+
+/** ISO instant the allocation was reversed, or '' while it is active. */
+export function allocationReversedAt(row) {
+  if (!row || typeof row !== 'object') return '';
+  const detail = reversalDetail(row) || {};
+  return String(
+    row.reversedAt || row.reversalAt || row.reversed_at || detail.reversedAt || detail.at || ''
+  ).trim();
+}
+
+/** Operator reason recorded with the reversal, or '' while it is active. */
+export function allocationReversalReason(row) {
+  if (!row || typeof row !== 'object') return '';
+  const detail = reversalDetail(row) || {};
+  return String(
+    row.reversalReason ||
+    row.reversedReason ||
+    row.reversal_reason ||
+    detail.reason ||
+    ''
+  ).trim();
+}
+
+/**
+ * An allocation is reversed when the API marks it so. The read model is
+ * normalized defensively because the flag may arrive as a status, a boolean,
+ * or only as the stamped reversal date/reason.
+ */
+export function allocationReversed(row) {
+  if (!row || typeof row !== 'object') return false;
+  if (row.reversed === true) return true;
+  if (String(row.status || '').trim().toUpperCase() === 'REVERSED') return true;
+  return Boolean(allocationReversedAt(row) || allocationReversalReason(row));
+}
+
+/** Body for POST .../reverse: the reason is required and trimmed by the API. */
+export function allocationReversalPayload(reason) {
+  return { reason: String(reason || '').trim() };
+}
+
+/**
+ * Client-side mirror of the API reversal rule: the reason is required, is
+ * trimmed, and is no longer than the server's 500-character bound.
+ */
+export function validateAllocationReversalReason(reason) {
+  const value = String(reason || '').trim();
+  if (!value) return 'A reason is required to reverse an allocation.';
+  if (value.length > ALLOCATION_REVERSAL_REASON_MAX) {
+    return `Reversal reason must be ${ALLOCATION_REVERSAL_REASON_MAX} characters or fewer.`;
+  }
+  return '';
+}
+
 /** Shell route owned by the target record, or '' when none can be linked. */
 export function allocationTargetHref(row) {
   const type = allocationTargetType(row);
@@ -204,9 +276,18 @@ export function allocationPayload(form) {
 }
 
 /**
- * Summary of the allocation ledger against the payment amount. Server totals
- * win when present; otherwise the visible rows are summed exactly in 1/10000
- * units so decimal strings never drift in JavaScript floating point.
+ * Summary of the allocation ledger against the payment amount.
+ *
+ * Reversal never deletes a split, so the ledger carries both the gross amount
+ * that was allocated and the part of it that has since been reversed:
+ *
+ * - `allocatedUnits` / `grossAllocatedUnits` — everything recorded, reversed or not
+ * - `reversedUnits` — the sum of the reversed splits
+ * - `netAllocatedUnits` — gross minus reversed, the amount still allocated
+ * - `remainingUnits` (alias `unallocatedUnits`) — payment amount minus net
+ *
+ * Server totals win when present; otherwise the visible rows are summed exactly
+ * in 1/10000 units so decimal strings never drift in JavaScript floating point.
  */
 export function summarizeAllocations(payload, payment) {
   const items = allocationRows(payload);
@@ -214,28 +295,54 @@ export function summarizeAllocations(payload, payment) {
   const paymentUnits = toUnits(payment?.amount);
 
   const serverAllocated = optionalUnits(
-    source.allocatedAmount ?? source.totalAmount ?? source.allocated
+    source.totalAllocated ?? source.allocatedAmount ?? source.totalAmount ?? source.allocated
   );
   const allocatedUnits = serverAllocated === null
     ? items.reduce((total, row) => total + toUnits(allocationAmount(row)), 0)
     : serverAllocated;
 
-  const serverUnallocated = optionalUnits(
-    source.unallocatedAmount ?? source.remainingAmount ?? source.unallocated
+  const reversedFromRows = items.reduce(
+    (total, row) => (allocationReversed(row) ? total + toUnits(allocationAmount(row)) : total),
+    0
   );
-  const unallocatedUnits = serverUnallocated === null
-    ? paymentUnits - allocatedUnits
-    : serverUnallocated;
+  const serverReversed = optionalUnits(
+    source.totalReversed ?? source.reversedAmount ?? source.reversedTotal ?? source.reversed
+  );
+  const reversedUnits = serverReversed === null ? reversedFromRows : serverReversed;
+
+  const serverNet = optionalUnits(
+    source.netAllocated ?? source.netAllocatedAmount ?? source.netAmount
+  );
+  const netAllocatedUnits = serverNet === null ? allocatedUnits - reversedUnits : serverNet;
+
+  const serverRemaining = optionalUnits(
+    source.unallocatedAmount ??
+    source.remainingAmount ??
+    source.unallocated ??
+    source.remaining
+  );
+  const remainingUnits = serverRemaining === null
+    ? paymentUnits - netAllocatedUnits
+    : serverRemaining;
 
   const count = Number.isInteger(source.count) ? source.count : items.length;
+  const reversedCount = Number.isInteger(source.reversedCount)
+    ? source.reversedCount
+    : items.filter((row) => allocationReversed(row)).length;
 
   return {
     items,
     paymentUnits,
     allocatedUnits,
-    unallocatedUnits,
+    grossAllocatedUnits: allocatedUnits,
+    reversedUnits,
+    netAllocatedUnits,
+    remainingUnits,
+    // Kept for callers that still read the pre-reversal field names.
+    unallocatedUnits: remainingUnits,
     count,
-    overAllocated: allocatedUnits > paymentUnits
+    reversedCount,
+    overAllocated: netAllocatedUnits > paymentUnits
   };
 }
 

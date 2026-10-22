@@ -97,32 +97,48 @@ authoritative record so the retry uses the current version.
 The **Allocations** tab splits one payment across the claim and policy
 components it settles. It calls
 `GET /api/v1/payments/{paymentId}/allocations` with the tenant header and
-accepts either a bare array or an `{ items, allocatedAmount, unallocatedAmount,
-count }` envelope. The summary shows the payment amount, allocated amount,
-unallocated balance, and allocation count; the unallocated balance is the
-payment amount minus the allocations and is never changed by recording one.
+accepts either a bare array or an `{ items, paymentAmount, totalAllocated,
+totalReversed, netAllocated, unallocated, count }` envelope. The summary shows
+the payment amount, **net allocated** (recorded allocations minus reversed
+ones), the **reversed** total, and the **remaining** balance (payment amount
+minus net allocated). The allocation count and the reversed count sit under net
+allocated. Recording or reversing an allocation never changes the payment
+amount.
 
 Each row shows the target type, a target reference linked to the owning
 vertical (`/direct-claims?record=`, `/assumed-claims?record=`, or
-`/policy?record=`), the component, the amount, and the created timestamp. The
-reference uses the API's `targetReference` when present, otherwise the label
-chosen in the picker, otherwise the owning vertical's predictive search for the
-target id, and finally the short UUID.
+`/policy?record=`), the component, the amount, the reversal state, and the
+created timestamp. A reversed row keeps its original target, component, and
+amount and adds a **REVERSED** badge, the recorded reversal reason, and the
+reversal date, so the split stays auditable. Active rows show an **ACTIVE**
+badge. The reference uses the API's `targetReference` when present, otherwise
+the label chosen in the picker, otherwise the owning vertical's predictive
+search for the target id, and finally the short UUID.
 
 **Add allocation** opens a dialog with a target-type select, an EntityPicker
 scoped to that vertical (`/api/v1/claims/search` with `X-EIA-Book: DIRECT`,
 `/api/v1/assumed-claims/search` with `ASSUMED`, or `/api/v1/policies/search`
 with `DIRECT`), a component select, and an amount that defaults to the current
 unallocated balance. The amount must be greater than 0 and no more than the
-unallocated balance; the dialog rejects a larger value before any request. A
+remaining balance; the dialog rejects a larger value before any request. A
 successful `POST /api/v1/payments/{paymentId}/allocations` body carries
 `targetType`, `targetId`, `component`, and `amount`; the created row is merged
 into the ledger immediately and the list is refetched to reconcile the totals.
 
-A 409 conflict keeps the dialog open with the entered values and offers
+**Reverse** is offered only for an active split. The dialog requires a
+non-blank reason of at most 500 characters and posts
+`POST /api/v1/payments/{paymentId}/allocations/{allocationId}/reverse` with
+`{ reason }`; the API trims and stores the reason with the reversal date. The
+reversed row remains in the ledger — a reversal is an append-only accounting
+correction, never a delete — while net allocated falls by the split amount and
+the remaining balance rises. A 409 (for example a repeated reversal of the same
+split) keeps the dialog open with the API problem and reload guidance. Every
+mutation refreshes the payment's activity timeline.
+
+A 409 on create keeps the dialog open with the entered values and offers
 **Reload allocations**. Loading, empty, and error states stay inside the tab, so
-a slow or failing allocation API never blocks the payment record. Allocating
-never changes the payment amount, approval path, or status.
+a slow or failing allocation API never blocks the payment record. Allocating or
+reversing never changes the payment amount, approval path, or status.
 
 ## Linked documents
 

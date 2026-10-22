@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { TENANT, api, problemMessage } from './api.js';
 import {
   ALLOCATION_COMPONENTS,
+  ALLOCATION_REVERSAL_REASON_MAX,
   ALLOCATION_TARGET_TYPES,
   allocationAmount,
   allocationComponent,
@@ -9,6 +10,11 @@ import {
   allocationEndpoint,
   allocationId,
   allocationPayload,
+  allocationReversed,
+  allocationReversedAt,
+  allocationReversalPayload,
+  allocationReversalReason,
+  allocationReverseEndpoint,
   allocationRows,
   allocationTargetHref,
   allocationTargetId,
@@ -20,7 +26,8 @@ import {
   targetMeta,
   targetTypeLabel,
   toUnits,
-  validateAllocation
+  validateAllocation,
+  validateAllocationReversalReason
 } from './allocations.js';
 import { formatMoney, shortId } from './format.js';
 import { navigate } from './navigation.js';
@@ -81,6 +88,11 @@ export default function AllocationsTab({ payment, onChanged }) {
   const [conflict, setConflict] = useState(false);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState('');
+  const [reversal, setReversal] = useState(null);
+  const [reversalReason, setReversalReason] = useState('');
+  const [reversalFormError, setReversalFormError] = useState('');
+  const [reversalError, setReversalError] = useState('');
+  const [reversing, setReversing] = useState(false);
 
   const mountedRef = useRef(true);
   const attemptedLabelsRef = useRef(new Set());
@@ -120,6 +132,11 @@ export default function AllocationsTab({ payment, onChanged }) {
     setConflict(false);
     setSaving(false);
     setStatus('');
+    setReversal(null);
+    setReversalReason('');
+    setReversalFormError('');
+    setReversalError('');
+    setReversing(false);
     attemptedLabelsRef.current = new Set();
 
     fetchAllocations()
@@ -196,9 +213,20 @@ export default function AllocationsTab({ payment, onChanged }) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [showForm, saving]);
 
+  useEffect(() => {
+    if (!reversal) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape' && !reversing) closeReversal();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [reversal, reversing]);
+
   const items = summary?.items || [];
-  const unallocatedUnits = summary ? summary.unallocatedUnits : toUnits(payment.amount);
-  const addDisabled = loading || Boolean(loadError) || !summary || unallocatedUnits <= 0 || saving;
+  const remainingUnits = summary ? summary.remainingUnits : toUnits(payment.amount);
+  const unallocatedUnits = remainingUnits;
+  const addDisabled = loading || Boolean(loadError) || !summary || remainingUnits <= 0
+    || saving || Boolean(reversal);
   const formMeta = targetMeta(form.targetType);
 
   function targetLabel(row) {
@@ -223,6 +251,111 @@ export default function AllocationsTab({ payment, onChanged }) {
     setShowForm(false);
     setFormError('');
     setConflict(false);
+  }
+
+  /**
+   * Opens the reversal dialog for one active split. Reversed allocations keep
+   * their ledger row for audit, so they never offer the action again.
+   */
+  function openReversal(row) {
+    if (!row || allocationReversed(row) || reversing || saving) return;
+    const id = allocationId(row);
+    if (!id) return;
+    setReversal({ row, id });
+    setReversalReason('');
+    setReversalFormError('');
+    setReversalError('');
+    setStatus('');
+  }
+
+  function closeReversal() {
+    if (reversing) return;
+    setReversal(null);
+    setReversalReason('');
+    setReversalFormError('');
+    setReversalError('');
+  }
+
+  /**
+   * Reverses one split. The POST only appends the reversal; the split stays in
+   * the ledger with its reason and date, so the optimistic row update keeps the
+   * original target, component, and amount and adds the stamped reversal.
+   */
+  async function submitReversal(event) {
+    event.preventDefault();
+    if (!reversal || reversing) return;
+    const validation = validateAllocationReversalReason(reversalReason);
+    if (validation) {
+      setReversalFormError(validation);
+      return;
+    }
+
+    const payloadBody = allocationReversalPayload(reversalReason);
+    setReversing(true);
+    setReversalFormError('');
+    setReversalError('');
+    setStatus('');
+
+    try {
+      const { response, body } = await api(
+        allocationReverseEndpoint(payment.id, reversal.id),
+        { method: 'POST', body: payloadBody }
+      );
+      if (!response.ok) {
+        const message = problemMessage(body, `Allocation reversal failed: ${response.status}`);
+        setReversalError(
+          response.status === 409
+            ? `${message} The allocation may already have been reversed; reload the allocations before retrying.`
+            : message
+        );
+        return;
+      }
+
+      const updated = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+      const reversedAt =
+        updated.reversedAt || updated.reversalAt || updated.reversed_at || '';
+      const reason =
+        updated.reversalReason || updated.reversedReason || payloadBody.reason;
+      const nextRow = {
+        ...reversal.row,
+        ...updated,
+        reversed: true,
+        reversalReason: reason,
+        reversedAt
+      };
+
+      // Drop any server envelope totals with the optimistic update so the
+      // summary recomputes from the complete row list, then reconcile with the
+      // ledger. A failed refresh leaves the reversed row visible with a hint.
+      setPayload((current) => ({
+        items: allocationRows(current).map((entry) => (
+          allocationId(entry) === reversal.id ? nextRow : entry
+        ))
+      }));
+      setReversal(null);
+      setReversalReason('');
+      setStatus(
+        `Reversed ${formatMoney(allocationAmount(nextRow), currency)} allocation to `
+        + `${targetLabel(nextRow)}. The original split remains on the ledger.`
+      );
+
+      fetchAllocations()
+        .then((next) => {
+          if (mountedRef.current) setPayload(next);
+        })
+        .catch(() => {
+          if (mountedRef.current) {
+            setStatus(
+              (previous) => `${previous} Reload the allocations to reconcile the totals.`
+            );
+          }
+        });
+      if (onChanged) onChanged();
+    } catch (cause) {
+      setReversalError(cause.message);
+    } finally {
+      setReversing(false);
+    }
   }
 
   function update(field, value) {
@@ -375,7 +508,7 @@ export default function AllocationsTab({ payment, onChanged }) {
             onClick={openForm}
             disabled={addDisabled}
             title={
-              !loading && summary && summary.unallocatedUnits <= 0
+              !loading && summary && summary.remainingUnits <= 0
                 ? 'The payment is fully allocated.'
                 : undefined
             }
@@ -385,9 +518,9 @@ export default function AllocationsTab({ payment, onChanged }) {
         </div>
       </div>
       <p className="eia-muted" style={{ marginTop: 0 }}>
-        Split this payment across the claim or policy components it settles. The sum of the
+        Split this payment across the claim or policy components it settles. The net of the
         allocations cannot exceed the {formatMoney(payment.amount, payment.currency)} payment,
-        and adding an allocation never changes the payment amount.
+        and adding or reversing an allocation never changes the payment amount.
       </p>
 
       <section className="eia-summary-grid" aria-label="Allocation summary">
@@ -399,46 +532,67 @@ export default function AllocationsTab({ payment, onChanged }) {
           <div className="eia-metric-label">{payment.currency || '—'} instructed amount</div>
         </div>
         <div className="eia-card">
-          <h3>Allocated</h3>
-          <div className="value" data-testid="allocations-allocated-amount">
-            {loading ? '…' : summary && !loadError ? formatMoney(decimalAmount(summary.allocatedUnits), currency) : '—'}
+          <h3>Net allocated</h3>
+          <div className="value" data-testid="allocations-net-amount">
+            {loading ? '…' : summary && !loadError ? formatMoney(decimalAmount(summary.netAllocatedUnits), currency) : '—'}
           </div>
           <div className="eia-metric-label">
-            {summary && !loadError ? `${summary.count} allocation${summary.count === 1 ? '' : 's'}` : 'Claim and policy splits'}
+            {summary && !loading && !loadError ? (
+              <>
+                <span data-testid="allocations-count">{summary.count}</span>
+                {` allocation${summary.count === 1 ? '' : 's'}`}
+                {summary.reversedCount > 0
+                  ? ` · ${summary.reversedCount} reversed`
+                  : ''}
+              </>
+            ) : (
+              <>
+                <span data-testid="allocations-count">{loading ? '…' : '—'}</span>
+                {' '}claim and policy splits
+              </>
+            )}
           </div>
         </div>
         <div className="eia-card">
-          <h3>Unallocated</h3>
-          <div className="value" data-testid="allocations-unallocated-amount">
-            {loading ? '…' : summary && !loadError ? formatMoney(decimalAmount(summary.unallocatedUnits), currency) : '—'}
+          <h3>Reversed</h3>
+          <div className="value" data-testid="allocations-reversed-amount">
+            {loading ? '…' : summary && !loadError ? formatMoney(decimalAmount(summary.reversedUnits), currency) : '—'}
+          </div>
+          <div className="eia-metric-label">
+            {summary && !loadError && summary.reversedCount > 0
+              ? `${summary.reversedCount} reversed split${summary.reversedCount === 1 ? '' : 's'} kept for audit`
+              : 'No reversed splits'}
+          </div>
+        </div>
+        <div className="eia-card">
+          <h3>Remaining</h3>
+          <div className="value" data-testid="allocations-remaining-amount">
+            {loading ? '…' : summary && !loadError ? formatMoney(decimalAmount(summary.remainingUnits), currency) : '—'}
           </div>
           <div className="eia-metric-label">
             {summary && !loadError && summary.overAllocated
-              ? `Allocated exceeds the payment by ${formatMoney(
-                  decimalAmount(summary.allocatedUnits - summary.paymentUnits),
+              ? `Net allocated exceeds the payment by ${formatMoney(
+                  decimalAmount(summary.netAllocatedUnits - summary.paymentUnits),
                   currency
                 )}`
-              : 'Payment amount minus allocated'}
+              : 'Payment amount minus net allocated'}
           </div>
-        </div>
-        <div className="eia-card">
-          <h3>Allocations</h3>
-          <div className="value" data-testid="allocations-count">
-            {loading ? '…' : summary && !loadError ? summary.count : '—'}
-          </div>
-          <div className="eia-metric-label">Claim or policy targets</div>
         </div>
       </section>
 
       <section className="eia-card" aria-label="Allocation ledger" data-testid="allocations-card">
         <div className="eia-section-title" style={{ marginTop: 0 }}>
           <h3>Allocation ledger</h3>
-          <span className="eia-muted">
+          <span className="eia-muted" data-testid="allocation-ledger-count">
             {loading
               ? '…'
               : loadError
                 ? '—'
-                : `${items.length} row${items.length === 1 ? '' : 's'}`}
+                : `${items.length} row${items.length === 1 ? '' : 's'}${
+                    summary && summary.reversedCount > 0
+                      ? ` · ${summary.reversedCount} reversed`
+                      : ''
+                  }`}
           </span>
         </div>
 
@@ -488,7 +642,9 @@ export default function AllocationsTab({ payment, onChanged }) {
                   <th>Target reference</th>
                   <th>Component</th>
                   <th>Amount</th>
+                  <th>Reversal</th>
                   <th>Created</th>
+                  <th>Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -496,9 +652,14 @@ export default function AllocationsTab({ payment, onChanged }) {
                   const type = allocationTargetType(row);
                   const href = allocationTargetHref(row);
                   const label = targetLabel(row);
+                  const reversed = allocationReversed(row);
                   const tone = type === 'DIRECT_CLAIM' ? 'direct' : type === 'ASSUMED_CLAIM' ? 'assumed' : '';
                   return (
-                    <tr key={allocationId(row) || `${allocationTargetId(row)}-${index}`} data-testid={`allocation-row-${index}`}>
+                    <tr
+                      key={allocationId(row) || `${allocationTargetId(row)}-${index}`}
+                      data-testid={`allocation-row-${index}`}
+                      data-reversed={reversed ? 'true' : 'false'}
+                    >
                       <td>
                         <span
                           className={`eia-badge ${tone}`.trim()}
@@ -531,8 +692,57 @@ export default function AllocationsTab({ payment, onChanged }) {
                       >
                         {formatMoney(allocationAmount(row), currency)}
                       </td>
+                      <td data-testid={`allocation-reversal-${index}`}>
+                        {reversed ? (
+                          <div className="eia-allocation-reversal">
+                            <span
+                              className="eia-badge reversed"
+                              data-testid={`allocation-reversed-badge-${index}`}
+                            >
+                              REVERSED
+                            </span>
+                            <span
+                              className="eia-allocation-reversal-reason"
+                              data-testid={`allocation-reversed-reason-${index}`}
+                            >
+                              {allocationReversalReason(row) || 'No reason recorded'}
+                            </span>
+                            <span
+                              className="eia-muted"
+                              data-testid={`allocation-reversed-at-${index}`}
+                            >
+                              {allocationReversedAt(row) || 'Date not recorded'}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="eia-badge ok" data-testid={`allocation-active-badge-${index}`}>
+                            ACTIVE
+                          </span>
+                        )}
+                      </td>
                       <td data-testid={`allocation-created-${index}`}>
                         {allocationCreatedAt(row) || '—'}
+                      </td>
+                      <td>
+                        {reversed ? (
+                          <span
+                            className="eia-muted"
+                            data-testid={`allocation-reversed-locked-${index}`}
+                          >
+                            Reversed
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="eia-btn-secondary"
+                            data-testid={`allocation-reverse-${index}`}
+                            onClick={() => openReversal(row)}
+                            disabled={reversing || saving || loading}
+                            title="Reverse this allocation; the split stays on the ledger"
+                          >
+                            Reverse
+                          </button>
+                        )}
                       </td>
                     </tr>
                   );
@@ -554,10 +764,14 @@ export default function AllocationsTab({ payment, onChanged }) {
           An allocation splits one payment across the claim or policy components it settles — for
           example the indemnity and defense portions of a direct claim, or the policy year a
           coverage payment belongs to. The sum of the allocations cannot exceed the payment
-          amount; any remainder is shown as unallocated. Allocating does not change the payment
+          amount; any remainder is shown as unallocated. Reversal is an append-only accounting
+          correction: it stamps the required reason and the reversal date on the split, keeps the
+          original target, component, and amount visible for audit, and never deletes the row.
+          Net allocated is the recorded allocations minus the reversed ones, and remaining is the
+          payment amount minus net allocated. Allocating or reversing does not change the payment
           amount, approval path, or status — it records how the disbursement is distributed. A
-          concurrent change that would over-allocate the payment is rejected with 409, so reload
-          the ledger before adjusting the amount.
+          concurrent change that would over-allocate the payment, or a repeat reversal of the same
+          split, is rejected with 409, so reload the ledger before retrying.
         </p>
       </section>
 
@@ -701,6 +915,116 @@ export default function AllocationsTab({ payment, onChanged }) {
                 )}
               </div>
             )}
+          </section>
+        </div>
+      )}
+
+      {reversal && (
+        <div
+          style={OVERLAY_STYLE}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !reversing) closeReversal();
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="allocation-reverse-title"
+            className="eia-card"
+            style={{ ...DIALOG_STYLE, width: 'min(640px, 100%)' }}
+            data-testid="allocation-reverse-dialog"
+          >
+            <div className="eia-record-title">
+              <div>
+                <h2 id="allocation-reverse-title" style={{ margin: 0 }}>Reverse allocation</h2>
+                <p className="eia-record-subtitle">
+                  Reverses {formatMoney(allocationAmount(reversal.row), currency)} allocated to{' '}
+                  {targetLabel(reversal.row)} · {componentLabel(allocationComponent(reversal.row)) || '—'}.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="eia-btn-ghost"
+                onClick={closeReversal}
+                disabled={reversing}
+              >
+                Close
+              </button>
+            </div>
+
+            <p className="eia-muted" data-testid="allocation-reverse-context" style={{ marginTop: 8 }}>
+              Original split recorded {allocationCreatedAt(reversal.row) || '—'}. The reversal keeps
+              the allocation on the ledger and records a reason and the reversal date; the split is
+              never deleted.
+            </p>
+
+            {reversalFormError && (
+              <p role="alert" data-testid="allocation-reverse-form-error" style={{ margin: '10px 0 0' }}>
+                {reversalFormError}
+              </p>
+            )}
+            {reversalError && (
+              <p role="alert" data-testid="allocation-reverse-error" style={{ margin: '10px 0 0' }}>
+                {reversalError}
+              </p>
+            )}
+
+            <form onSubmit={submitReversal} style={{ marginTop: 14 }} data-testid="allocation-reverse-form">
+              <div className="eia-field">
+                <label htmlFor="allocation-reverse-reason">Reversal reason</label>
+                <textarea
+                  id="allocation-reverse-reason"
+                  data-testid="allocation-reverse-reason"
+                  rows={3}
+                  maxLength={ALLOCATION_REVERSAL_REASON_MAX}
+                  value={reversalReason}
+                  onChange={(event) => {
+                    setReversalReason(event.target.value);
+                    setReversalFormError('');
+                  }}
+                  aria-required="true"
+                  aria-invalid={reversalFormError ? 'true' : 'false'}
+                  disabled={reversing}
+                  autoFocus
+                />
+                <span className="eia-picker-hint">
+                  Required. The reason is kept on the allocation ledger with the reversal date.
+                </span>
+              </div>
+              <div className="eia-actions" style={{ justifyContent: 'flex-end', marginTop: 14 }}>
+                <button
+                  type="button"
+                  className="eia-btn-secondary"
+                  onClick={closeReversal}
+                  disabled={reversing}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="eia-btn-danger"
+                  data-testid="allocation-reverse-submit"
+                  disabled={reversing}
+                >
+                  {reversing ? 'Reversing…' : 'Reverse allocation'}
+                </button>
+              </div>
+            </form>
+
+            <section
+              className="eia-context-panel"
+              aria-label="Allocation reversal context"
+              data-testid="allocation-reverse-context-panel"
+            >
+              <h4>What reversing does</h4>
+              <p>
+                Appends a reversal to the split&apos;s audit history: the reason and reversal date
+                stay on the ledger with the original target, component, and amount. The allocation
+                is not deleted, the split is no longer counted in net allocated, and the remaining
+                balance rises by its amount. Reversing never changes the payment amount, approval
+                path, or status.
+              </p>
+            </section>
           </section>
         </div>
       )}

@@ -3,8 +3,18 @@ import './ui.css';
 import './ui-overrides.css';
 import AllocationsTab from './AllocationsTab.jsx';
 import EntityPicker from './EntityPicker.jsx';
+import PaymentLifecycle from './PaymentLifecycle.jsx';
 import { api, problemMessage } from './api.js';
 import { formatMoney, shortId } from './format.js';
+import {
+  EXECUTION_LIFECYCLE,
+  confirmationCopy,
+  executionLabel,
+  lifecycleIndex,
+  nextLifecycleAction,
+  statusChangeEndpoint,
+  statusChangePayload
+} from './lifecycle.js';
 import { navigate, recordHref } from './navigation.js';
 import { partyEndpoint, partyRecordLabel } from './party.js';
 import {
@@ -49,44 +59,6 @@ const PAYMENT_TYPES = [
   'BROKERAGE', 'CASH_CALL', 'TECHNICAL_ACCOUNT_SETTLEMENT',
   'SECURITY_COLLATERAL', 'REFUND', 'OFFSET', 'INTERCOMPANY', 'TAX', 'FEE'
 ];
-
-const NEXT_ACTION = {
-  DRAFT: { path: 'submit', label: 'Submit' },
-  PENDING_AUTHORITY: { path: 'authorize', label: 'Authorize' },
-  AUTHORIZED: { path: 'approve', label: 'Approve' },
-  APPROVED: { path: 'issue', label: 'Issue' },
-  SCHEDULED: { path: 'issue', label: 'Issue' }
-};
-
-const ACTION_NOTICE = {
-  submit: 'submitted for authority',
-  authorize: 'authorized',
-  approve: 'approved for issuance',
-  issue: 'issued to SAP/bank'
-};
-
-const LIFECYCLE = [
-  { status: 'DRAFT', transition: 'Payment created' },
-  { status: 'PENDING_AUTHORITY', transition: 'Submitted for authority' },
-  { status: 'AUTHORIZED', transition: 'Authorized by approver' },
-  { status: 'APPROVED', transition: 'Approved for issuance' },
-  { status: 'SCHEDULED', transition: 'Scheduled for payment run' },
-  { status: 'SUBMITTED', transition: 'Issued to SAP/bank' }
-];
-
-const LIFECYCLE_INDEX = {
-  DRAFT: 0,
-  PENDING_AUTHORITY: 1,
-  AUTHORIZED: 2,
-  APPROVED: 3,
-  SCHEDULED: 4,
-  SUBMITTED: 5,
-  ACCEPTED: 6,
-  PROCESSING: 7,
-  PARTIALLY_PAID: 8,
-  PAID: 8,
-  RECONCILED: 9
-};
 
 const TABS = [
   { id: 'overview', label: 'Overview' },
@@ -145,19 +117,6 @@ function statusTone(status) {
   }
   if (['DRAFT', 'PENDING_AUTHORITY'].includes(status)) return 'amber';
   return 'blue';
-}
-
-function lifecycleIndex(status) {
-  return Object.prototype.hasOwnProperty.call(LIFECYCLE_INDEX, status) ? LIFECYCLE_INDEX[status] : -1;
-}
-
-function executionLabel(status) {
-  if (['DRAFT', 'PENDING_AUTHORITY', 'AUTHORIZED'].includes(status)) return 'Blocked: approval required';
-  if (['APPROVED', 'SCHEDULED'].includes(status)) return 'Approved for execution';
-  if (['SUBMITTED', 'ACCEPTED', 'PROCESSING', 'PARTIALLY_PAID', 'PAID', 'RECONCILED'].includes(status)) {
-    return 'Issued to SAP/bank';
-  }
-  return 'No execution action recorded';
 }
 
 /**
@@ -320,6 +279,10 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState(null);
   const [detailNonce, setDetailNonce] = useState(0);
+  const [pendingAction, setPendingAction] = useState(null);
+  const [actionReason, setActionReason] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [conflict, setConflict] = useState('');
   const [documents, setDocuments] = useState([]);
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [documentsError, setDocumentsError] = useState('');
@@ -567,6 +530,19 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [showCreate, saving]);
 
+  useEffect(() => {
+    if (!pendingAction) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape' && !busyId) {
+        setPendingAction(null);
+        setActionReason('');
+        setActionError('');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [pendingAction, busyId]);
+
   function update(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
   }
@@ -613,6 +589,10 @@ export default function App() {
     if (payment.id !== currentId) setTab('overview');
     setError('');
     setNotice('');
+    setConflict('');
+    setPendingAction(null);
+    setActionReason('');
+    setActionError('');
     if (payment.id !== currentId) setDetailNonce((value) => value + 1);
     if (!options.fromUrl) writeUrl({ record: payment.id });
   }
@@ -687,6 +667,7 @@ export default function App() {
   async function refreshWorkspace() {
     setError('');
     setNotice('');
+    setConflict('');
     await load();
     if (selected?.id) setDetailNonce((value) => value + 1);
   }
@@ -740,35 +721,162 @@ export default function App() {
     }
   }
 
-  async function advance(payment, action) {
+  /** Replaces the selected payment and its queue row with an authoritative read. */
+  function applyPaymentRead(payment) {
+    if (!payment?.id) return;
+    setPayments((current) => {
+      let found = false;
+      const next = current.map((entry) => {
+        if (entry.id !== payment.id) return entry;
+        found = true;
+        return payment;
+      });
+      return found ? next : [payment, ...current];
+    });
+    setSelected((current) => (current?.id === payment.id ? payment : current));
+  }
+
+  /**
+   * Reloads one payment by id and mirrors it into the queue. Used for the 409
+   * path (and as a fallback when a status write returns no body); it never sets
+   * the page-level error so the conflict can be contained in the lifecycle
+   * action bar.
+   */
+  async function reloadPayment(paymentId) {
+    try {
+      const { response, body } = await api(`/api/v1/payments/${encodeURIComponent(paymentId)}`);
+      if (!response.ok) {
+        return {
+          ok: false,
+          error: problemMessage(body, `Reload failed: ${response.status}`)
+        };
+      }
+      if (!body?.id) return { ok: false, error: 'the server returned no payment' };
+      applyPaymentRead(body);
+      return { ok: true, payment: body };
+    } catch (cause) {
+      return { ok: false, error: cause.message };
+    }
+  }
+
+  /**
+   * Sends one PATCH /api/v1/payments/{id}/status. A 409 means another request
+   * changed the payment first: the conflict stays inside the lifecycle panel
+   * and the authoritative record is reloaded so the next action uses the new
+   * version instead of the stale one.
+   */
+  async function performAction(payment, action, reason, { fromDialog = false } = {}) {
     if (!payment || !action || busyId) return;
+    setBusyId(payment.id);
     setError('');
     setNotice('');
-    setBusyId(payment.id);
+    setConflict('');
+    if (fromDialog) setActionError('');
+
     try {
-      const { response, body } = await api(`/api/v1/payments/${payment.id}/${action.path}`, {
-        method: 'POST'
+      const { response, body } = await api(statusChangeEndpoint(payment.id), {
+        method: 'PATCH',
+        body: statusChangePayload(payment, action, reason)
       });
-      if (!response.ok) {
-        setError(problemMessage(body, `Action failed: ${response.status}`));
+
+      if (response.status === 409) {
+        const message = problemMessage(
+          body,
+          `The payment changed since version ${payment.version}.`
+        );
+        const reload = await reloadPayment(payment.id);
+        setPendingAction(null);
+        setActionReason('');
+        setActionError('');
+        setConflict(
+          reload.ok
+            ? `${message} The latest payment was reloaded; review the current status before retrying.`
+            : `${message} The latest payment could not be reloaded (${reload.error}). Reload the payment before retrying.`
+        );
+        setActivityNonce((value) => value + 1);
         return;
       }
-      setNotice(
-        `${body?.paymentNumber || payment.paymentNumber} ${ACTION_NOTICE[action.path] || 'advanced'}; `
-        + `status ${body?.status || '—'}.`
-      );
-      setSelected((current) => (current?.id === payment.id ? body : current));
-      await load({ silent: true });
-      setDetailNonce((value) => value + 1);
+
+      if (!response.ok) {
+        const message = problemMessage(body, `Status change failed: ${response.status}`);
+        if (fromDialog) setActionError(message);
+        else setError(message);
+        return;
+      }
+
+      const updated = body && typeof body === 'object' && body.id ? body : null;
+      if (updated) {
+        applyPaymentRead(updated);
+        setNotice(
+          `${updated.paymentNumber || payment.paymentNumber} is now ${updated.status || action.to}.`
+        );
+      } else {
+        const reload = await reloadPayment(payment.id);
+        if (reload.ok) {
+          setNotice(`${payment.paymentNumber} is now ${reload.payment.status || action.to}.`);
+        } else {
+          setError(`The payment was updated but could not be reloaded (${reload.error}).`);
+        }
+      }
+      setPendingAction(null);
+      setActionReason('');
+      setActionError('');
+      // A lifecycle write appends activity; refresh the event timeline without
+      // re-reading the payment (the PATCH response is already authoritative).
+      setActivityNonce((value) => value + 1);
     } catch (cause) {
-      setError(cause.message);
+      if (fromDialog) setActionError(cause.message);
+      else setError(cause.message);
     } finally {
       setBusyId(null);
     }
   }
 
-  const action = selected ? NEXT_ACTION[selected.status] : null;
+  /** Opens the confirmation dialog for Mark paid/Reconcile, else acts at once. */
+  function startAction(action) {
+    if (!selected || !action || busyId) return;
+    setError('');
+    setNotice('');
+    setConflict('');
+    setActionError('');
+    if (action.confirm) {
+      setPendingAction(action);
+      setActionReason('');
+      return;
+    }
+    performAction(selected, action, '');
+  }
+
+  function closeActionDialog() {
+    if (busyId) return;
+    setPendingAction(null);
+    setActionReason('');
+    setActionError('');
+  }
+
+  function confirmAction(event) {
+    event.preventDefault();
+    if (!selected || !pendingAction || busyId) return;
+    performAction(selected, pendingAction, actionReason, { fromDialog: true });
+  }
+
+  async function reloadFromConflict() {
+    if (!selected?.id || busyId) return;
+    setBusyId(selected.id);
+    const reload = await reloadPayment(selected.id);
+    setBusyId(null);
+    if (reload.ok) {
+      setConflict('');
+      setNotice(`Reloaded ${selected.paymentNumber}; current status ${reload.payment.status}.`);
+      setActivityNonce((value) => value + 1);
+    } else {
+      setConflict(`The payment could not be reloaded (${reload.error}). Try again.`);
+    }
+  }
+
+  const action = selected ? nextLifecycleAction(selected.status) : null;
   const currentIndex = selected ? lifecycleIndex(selected.status) : -1;
+  const confirmCopy = pendingAction ? confirmationCopy(pendingAction) : null;
   const selectedPayeeLabel = partyLabel(payeeParties, selected?.payeePartyId);
   const selectedPayeeSecondary = partySecondary(payeeParties, selected?.payeePartyId);
   const selectedPayeeText = (selected?.payeePartyId && partyDetails[selected.payeePartyId])
@@ -820,8 +928,9 @@ export default function App() {
           <div className="eyebrow">Operations · Payment</div>
           <h1>Payment</h1>
           <p className="subtitle">
-            Payment authority, approval, and issuance. Execution stays blocked until the payment is
-            approved; amounts use ISO 4217 currency and the SPEC 11.7.5 payment types.
+            Payment authority, approval, execution, and reconciliation. The payment owns its
+            lifecycle from DRAFT to RECONCILED; claim and policy links are evidence only. Amounts
+            use ISO 4217 currency and the SPEC 11.7.5 payment types.
           </p>
         </div>
         <div className="eia-actions">
@@ -982,23 +1091,15 @@ export default function App() {
                     </p>
                   )}
                 </div>
-                <div className="eia-actions">
-                  {action ? (
-                    <button
-                      type="button"
-                      data-testid="payment-action"
-                      onClick={() => advance(selected, action)}
-                      disabled={busyId === selected.id}
-                    >
-                      {busyId === selected.id ? 'Working…' : action.label}
-                    </button>
-                  ) : (
-                    <span className="eia-badge" data-testid="payment-action-none">
-                      No action
-                    </span>
-                  )}
-                </div>
               </div>
+
+              <PaymentLifecycle
+                payment={selected}
+                busy={busyId === selected.id}
+                conflict={conflict}
+                onAction={startAction}
+                onReload={reloadFromConflict}
+              />
 
               <div className="eia-summary-grid">
                 <div className="eia-card">
@@ -1131,8 +1232,9 @@ export default function App() {
                         <dd>{selected.updatedAt || '—'}</dd>
                       </dl>
                       <p className="eia-muted" style={{ marginBottom: 0 }}>
-                        Execution stays blocked until the payment has passed approval; the primary
-                        action in the record header advances the lifecycle.
+                        Execution stays blocked until the payment has passed approval. The payment
+                        record owns every later execution step through reconciliation, and claim or
+                        policy links are evidence only — they never advance the status.
                       </p>
                     </section>
                   </div>
@@ -1146,11 +1248,15 @@ export default function App() {
                     <p>
                       A payment is the disbursement leg of the claim or policy lifecycle: it records
                       the amount, currency, payee party, and value date that leave the insurer.
-                      The source record controls what is being paid — the claim, policy, or other
-                      obligation this disbursement settles — and it supplies the reserve, settlement,
-                      and coverage context upstream. Approval controls execution — the payment stays
-                      blocked until it is submitted, authorized, and approved, and issuing it releases
-                      the instruction to SAP/bank.
+                      The payment itself owns its execution lifecycle — DRAFT through
+                      PENDING_AUTHORITY, AUTHORIZED, APPROVED, SCHEDULED, SUBMITTED, ACCEPTED,
+                      PROCESSING, PAID, and RECONCILED — including scheduling, sending to
+                      SAP/bank, acceptance, processing, settlement, and reconciliation. Claim and
+                      policy links are evidence of what is being paid and supply the reserve,
+                      settlement, and coverage context upstream, but they never advance or control
+                      the payment status. Approval gates execution; every later step writes one
+                      status transition on this payment using its current version, and Mark paid
+                      and Reconcile require explicit confirmation.
                     </p>
                     <div className="links">
                       {selected.payeePartyId && (
@@ -1271,8 +1377,10 @@ export default function App() {
                     <span className="eia-muted">Current status {selected.status}</span>
                   </div>
                   <p className="eia-muted" style={{ marginTop: 0 }}>
-                    The Payment API exposes submit, authorize, approve, and issue transitions. Issue
-                    moves an approved payment to SCHEDULED and then SUBMITTED.
+                    The Payment API owns the full execution path. Every step below is one
+                    PATCH /api/v1/payments/{'{id}'}/status with a target status, the payment's
+                    expectedVersion, and an optional reason. Mark paid and Reconcile require
+                    confirmation before the write.
                   </p>
                   <div className="eia-table-wrap">
                     <table className="eia-table">
@@ -1285,7 +1393,7 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody>
-                        {LIFECYCLE.map((step, index) => {
+                        {EXECUTION_LIFECYCLE.map((step, index) => {
                           let progress = 'Pending';
                           if (currentIndex >= 0) {
                             if (index < currentIndex) progress = 'Passed';
@@ -1306,18 +1414,25 @@ export default function App() {
                   </div>
                   {currentIndex < 0 && (
                     <p className="eia-muted">
-                      Status {selected.status} is not on the forward approval path; no further
+                      Status {selected.status} is not on the forward execution path; no further
                       lifecycle action is exposed.
                     </p>
                   )}
-                  <section className="eia-card" aria-label="Next approval action" style={{ marginTop: 16 }}>
+                  <section
+                    className="eia-card"
+                    aria-label="Next lifecycle action"
+                    data-testid="approval-next-action"
+                    style={{ marginTop: 16 }}
+                  >
                     <div className="eia-section-title" style={{ marginTop: 0 }}>
-                      <h2>Next approval action</h2>
+                      <h2>Next lifecycle action</h2>
                       <span className="eia-muted">{action ? action.label : 'No action'}</span>
                     </div>
                     <p className="eia-muted" style={{ margin: 0 }}>
                       {action
-                        ? `${action.label} uses POST /api/v1/payments/{id}/${action.path} and records the next lifecycle state.`
+                        ? `${action.label} sends PATCH /api/v1/payments/{id}/status with status `
+                          + `${action.to} and expectedVersion ${selected.version}`
+                          + `${action.confirm ? ', after confirmation' : ''}.`
                         : `No lifecycle action is exposed for status ${selected.status}.`}
                     </p>
                   </section>
@@ -1518,6 +1633,97 @@ export default function App() {
           )}
         </section>
       </div>
+
+      {pendingAction && selected && confirmCopy && (
+        <div
+          style={OVERLAY_STYLE}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !busyId) closeActionDialog();
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="payment-action-title"
+            className="eia-card"
+            style={DIALOG_STYLE}
+            data-testid="payment-action-dialog"
+          >
+            <div className="eia-record-title">
+              <div>
+                <h2 id="payment-action-title" style={{ margin: 0 }}>{confirmCopy.title}</h2>
+                <p className="eia-record-subtitle">
+                  {selected.paymentNumber} · {formatMoney(selected.amount, selected.currency)}
+                  {' · '}
+                  {selected.status} → {pendingAction.to}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="eia-btn-ghost"
+                onClick={closeActionDialog}
+                disabled={busyId === selected.id}
+              >
+                Close
+              </button>
+            </div>
+
+            <p className="eia-muted" data-testid="lifecycle-confirm-description">
+              {confirmCopy.description}
+            </p>
+
+            <dl className="eia-kv">
+              <dt>Status change</dt>
+              <dd>{selected.status} → {pendingAction.to}</dd>
+              <dt>Expected version</dt>
+              <dd data-testid="lifecycle-expected-version">{selected.version ?? '—'}</dd>
+            </dl>
+
+            <form onSubmit={confirmAction} style={{ marginTop: 16 }} data-testid="lifecycle-confirm-form">
+              <div className="eia-field">
+                <label htmlFor="lifecycle-reason">Reason (optional)</label>
+                <textarea
+                  id="lifecycle-reason"
+                  data-testid="lifecycle-reason"
+                  value={actionReason}
+                  onChange={(event) => setActionReason(event.target.value)}
+                  placeholder="For example the bank reference or reconciliation note"
+                  rows={3}
+                  maxLength={500}
+                  disabled={busyId === selected.id}
+                  autoFocus
+                />
+              </div>
+
+              {actionError && (
+                <p role="alert" data-testid="lifecycle-action-error" style={{ margin: '10px 0 0' }}>
+                  {actionError}
+                </p>
+              )}
+
+              <div className="eia-actions" style={{ justifyContent: 'flex-end', marginTop: 14 }}>
+                <button
+                  type="button"
+                  className="eia-btn-secondary"
+                  onClick={closeActionDialog}
+                  disabled={busyId === selected.id}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  data-testid="lifecycle-confirm-submit"
+                  disabled={busyId === selected.id}
+                >
+                  {busyId === selected.id
+                    ? 'Working…'
+                    : `Confirm ${pendingAction.label}`}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
 
       {showCreate && (
         <div

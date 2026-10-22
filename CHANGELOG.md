@@ -8,6 +8,21 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ### Added
 
+- Payment execution lifecycle action bar and timeline: the selected payment
+  shows the full `DRAFT` → `PENDING_AUTHORITY` → `AUTHORIZED` → `APPROVED` →
+  `SCHEDULED` → `SUBMITTED` → `ACCEPTED` → `PROCESSING` → `PAID` →
+  `RECONCILED` path, marks passed/current/pending steps, and exposes only the
+  single next happy-path action. Each action sends
+  `PATCH /api/v1/payments/{id}/status` with `{ status, expectedVersion, reason? }`.
+  Mark paid and Reconcile require confirmation and accept an optional reason.
+  A successful write updates the selected record and its queue row; a 409
+  conflict is contained in the panel with an authoritative record reload and a
+  manual reload control. Terminal exception states expose no automatic action.
+  The Overview context now states that the payment owns execution while claim
+  and policy links are evidence only.
+- Playwright coverage for the status-to-action mapping, one versioned PATCH per
+  step, optional confirmation reasons, the Mark paid and Reconcile dialogs, the
+  409 reload/contain path, the timeline states, and off-path terminal statuses.
 - Repository baseline.
 - Record discovery for the payment workbench: `?record=` selects a payment and
   re-opens it on popstate, `?new=1` opens the create dialog, and a queue filter
@@ -79,3 +94,10 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   retry, the 409 conflict reload, and the loading state.
 - Shared `api.js`/`format.js` helpers now carry the tenant-aware JSON transport
   and money/short-id formatting used by the workbench and its tabs.
+
+### Changed
+
+- The record action moved from the header into the lifecycle panel. Lifecycle
+  writes no longer use the old POST `/submit`, `/authorize`, `/approve`, and
+  `/issue` endpoints; every step is one versioned PATCH on
+  `/api/v1/payments/{id}/status`.

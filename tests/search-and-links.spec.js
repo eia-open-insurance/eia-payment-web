@@ -272,8 +272,9 @@ test('context panel explains the disbursement boundary and cross-links the payee
   await expect(context).toBeVisible();
   await expect(context.getByRole('heading', { name: 'Why this matters' })).toBeVisible();
   await expect(context).toContainText(/disbursement leg/i);
-  await expect(context).toContainText(/approval controls execution/i);
-  await expect(context).toContainText(/source record controls what is being paid/i);
+  await expect(context).toContainText(/approval gates execution/i);
+  await expect(context).toContainText(/claim and policy links are evidence/i);
+  await expect(context).toContainText(/never advance or control the payment status/i);
   await expect(context.getByTestId('context-source-link')).toHaveCount(0);
   await expect(context.getByRole('link', { name: 'Payee party record' })).toHaveAttribute(
     'href',

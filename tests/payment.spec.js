@@ -95,7 +95,9 @@ test('renders the payment record layout, summary grid and lifecycle tabs', async
 
   await expect(page.getByRole('heading', { name: 'Payment', exact: true })).toBeVisible();
   await expect(page.getByText('Operations · Payment')).toBeVisible();
-  await expect(page.getByText('Payment authority, approval, and issuance.')).toBeVisible();
+  await expect(
+    page.getByText('Payment authority, approval, execution, and reconciliation.')
+  ).toBeVisible();
   await expect(page.getByRole('button', { name: 'Refresh' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Create payment' })).toBeVisible();
   await expect(page.locator('.eia-record-layout')).toBeVisible();
@@ -114,7 +116,7 @@ test('renders the payment record layout, summary grid and lifecycle tabs', async
   await expect(page.getByRole('heading', { name: 'PAY-2026-0044721', level: 2 })).toBeVisible();
   await expect(page.getByTestId('payment-status')).toHaveText('DRAFT');
   await expect(page.getByTestId('record-amount')).toHaveText('$125,000.00');
-  await expect(page.getByTestId('payment-action')).toHaveText('Submit');
+  await expect(page.getByTestId('payment-action')).toHaveText('Submit for authority');
   expect(detailRequests).toContain(first.id);
 
   await expect(page.getByTestId('summary-amount')).toHaveText('$125,000.00');
@@ -133,10 +135,14 @@ test('renders the payment record layout, summary grid and lifecycle tabs', async
   await expect(page.getByRole('tab', { name: 'Approval Path' })).toHaveAttribute('aria-selected', 'true');
   const approvalPanel = page.locator('#panel-approval');
   await expect(approvalPanel.getByRole('table')).toBeVisible();
-  await expect(approvalPanel.getByText('PENDING_AUTHORITY')).toBeVisible();
+  await expect(approvalPanel.getByText('PENDING_AUTHORITY', { exact: true })).toBeVisible();
   await expect(approvalPanel.getByText('Submitted for authority')).toBeVisible();
   await expect(approvalPanel.getByText('Current', { exact: true })).toBeVisible();
-  await expect(approvalPanel.getByText(/Submit uses POST \/api\/v1\/payments\/\{id\}\/submit/)).toBeVisible();
+  await expect(
+    approvalPanel
+      .getByTestId('approval-next-action')
+      .getByText(/PATCH \/api\/v1\/payments\/\{id\}\/status/)
+  ).toBeVisible();
 
   await page.getByRole('tab', { name: 'Payment Details' }).click();
   const detailsPanel = page.locator('#panel-details');
@@ -237,7 +243,7 @@ test('creates a payment from the modal and sends the tenant header', async ({ pa
   });
 });
 
-test('advances submit, authorize, approve and issue through the header action', async ({ page }) => {
+test('advances submit, authorize, and approve through PATCH status', async ({ page }) => {
   let current = payment();
   const calls = [];
 
@@ -252,19 +258,15 @@ test('advances submit, authorize, approve and issue through the header action', 
       await json(route, 200, current);
       return;
     }
-    const match = url.pathname.match(
-      new RegExp(`^/api/v1/payments/${current.id}/(submit|authorize|approve|issue)$`)
-    );
-    if (method === 'POST' && match) {
-      const action = match[1];
-      calls.push(action);
-      const transitions = {
-        submit: { status: 'PENDING_AUTHORITY', version: 1 },
-        authorize: { status: 'AUTHORIZED', version: 2 },
-        approve: { status: 'APPROVED', version: 3 },
-        issue: { status: 'SUBMITTED', version: 5 }
+    if (method === 'PATCH' && url.pathname === `/api/v1/payments/${current.id}/status`) {
+      const payload = route.request().postDataJSON();
+      calls.push(payload);
+      current = {
+        ...current,
+        status: payload.status,
+        version: current.version + 1,
+        updatedAt: '2026-10-19T13:00:00Z'
       };
-      current = { ...current, ...transitions[action], updatedAt: '2026-10-19T13:00:00Z' };
       await json(route, 200, current);
       return;
     }
@@ -273,29 +275,28 @@ test('advances submit, authorize, approve and issue through the header action', 
 
   await page.goto('/');
   await expect(page.getByTestId('payment-status')).toHaveText('DRAFT');
-  await expect(page.getByTestId('payment-action')).toHaveText('Submit');
+  await expect(page.getByTestId('payment-action')).toHaveText('Submit for authority');
 
   await page.getByTestId('payment-action').click();
-  await expect(page.getByRole('status')).toContainText('submitted for authority');
+  await expect(page.getByRole('status')).toContainText('is now PENDING_AUTHORITY');
   await expect(page.getByTestId('payment-status')).toHaveText('PENDING_AUTHORITY');
   await expect(page.getByTestId('payment-action')).toHaveText('Authorize');
 
   await page.getByTestId('payment-action').click();
-  await expect(page.getByRole('status')).toContainText('authorized');
+  await expect(page.getByRole('status')).toContainText('is now AUTHORIZED');
   await expect(page.getByTestId('payment-status')).toHaveText('AUTHORIZED');
   await expect(page.getByTestId('payment-action')).toHaveText('Approve');
 
   await page.getByTestId('payment-action').click();
-  await expect(page.getByRole('status')).toContainText('approved for issuance');
+  await expect(page.getByRole('status')).toContainText('is now APPROVED');
   await expect(page.getByTestId('payment-status')).toHaveText('APPROVED');
-  await expect(page.getByTestId('payment-action')).toHaveText('Issue');
+  await expect(page.getByTestId('payment-action')).toHaveText('Schedule');
 
-  await page.getByTestId('payment-action').click();
-  await expect(page.getByRole('status')).toContainText('issued to SAP/bank');
-  await expect(page.getByTestId('payment-status')).toHaveText('SUBMITTED');
-  await expect(page.getByTestId('payment-action-none')).toHaveText('No action');
-
-  expect(calls).toEqual(['submit', 'authorize', 'approve', 'issue']);
+  expect(calls).toEqual([
+    { status: 'PENDING_AUTHORITY', expectedVersion: 0 },
+    { status: 'AUTHORIZED', expectedVersion: 1 },
+    { status: 'APPROVED', expectedVersion: 2 }
+  ]);
 });
 
 test('renders a Payment API problem error when an action is rejected', async ({ page }) => {
@@ -312,7 +313,7 @@ test('renders a Payment API problem error when an action is rejected', async ({ 
       await json(route, 200, draft);
       return;
     }
-    if (method === 'POST' && url.pathname === `/api/v1/payments/${draft.id}/submit`) {
+    if (method === 'PATCH' && url.pathname === `/api/v1/payments/${draft.id}/status`) {
       await route.fulfill({
         status: 400,
         contentType: 'application/problem+json',
@@ -321,7 +322,7 @@ test('renders a Payment API problem error when an action is rejected', async ({ 
           status: 400,
           code: 'INVALID_STATUS_TRANSITION',
           message: 'Cannot submit a payment in status PENDING_AUTHORITY; expected DRAFT',
-          path: `/api/v1/payments/${draft.id}/submit`,
+          path: `/api/v1/payments/${draft.id}/status`,
           details: []
         })
       });
@@ -338,6 +339,7 @@ test('renders a Payment API problem error when an action is rejected', async ({ 
     'INVALID_STATUS_TRANSITION: Cannot submit a payment in status PENDING_AUTHORITY; expected DRAFT'
   );
   await expect(page.getByTestId('payment-status')).toHaveText('DRAFT');
+  await expect(page.getByTestId('payment-action')).toHaveText('Submit for authority');
 });
 
 test('renders Payment API validation details inside the create modal', async ({ page }) => {

@@ -25,6 +25,38 @@ A classified source links back to `/direct-claims`, `/assumed-claims`, or
 carry only its human reference. Source fields are optional on a normal create
 and are sent only when supplied.
 
+## Payment execution lifecycle
+
+The selected payment shows an **Execution lifecycle** panel with the ordered
+happy path and its single next action:
+
+| Current status | Action | Target status |
+| --- | --- | --- |
+| `DRAFT` | Submit for authority | `PENDING_AUTHORITY` |
+| `PENDING_AUTHORITY` | Authorize | `AUTHORIZED` |
+| `AUTHORIZED` | Approve | `APPROVED` |
+| `APPROVED` | Schedule | `SCHEDULED` |
+| `SCHEDULED` | Send | `SUBMITTED` |
+| `SUBMITTED` | Accept | `ACCEPTED` |
+| `ACCEPTED` | Process | `PROCESSING` |
+| `PROCESSING` | Mark paid | `PAID` |
+| `PAID` | Reconcile | `RECONCILED` |
+
+Each action sends one `PATCH /api/v1/payments/{id}/status` with
+`{ status, expectedVersion: payment.version }` and an optional `reason`. Mark
+paid and Reconcile open a confirmation dialog first, where the operator may
+enter the reason; routine transitions send the minimal payload. A successful
+write updates both the selected record and its queue row from the response. A
+409 conflict is contained in the lifecycle panel: the workbench reloads the
+authoritative payment (and therefore the current version), shows the problem,
+and offers a manual reload.
+
+The timeline marks every step as done, current, or pending, and states that the
+payment owns execution: claim and policy links are evidence of what is being
+paid, not controllers of the status. `RECONCILED` completes the path; terminal
+exception states such as `FAILED`, `RETURNED`, `CANCELLED`, and `VOID` are
+off-path and expose no automatic next action.
+
 ## Payment allocations
 
 The **Allocations** tab splits one payment across the claim and policy

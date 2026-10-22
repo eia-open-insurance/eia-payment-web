@@ -11,6 +11,7 @@ import {
   actionRequiresReason,
   confirmationCopy,
   executionLabel,
+  isOffPathStatus,
   isTerminalStatus,
   lifecycleIndex,
   nextLifecycleAction,
@@ -115,23 +116,34 @@ function humanize(value) {
 }
 
 function statusTone(status) {
-  if (['SUBMITTED', 'ACCEPTED', 'PROCESSING', 'PARTIALLY_PAID', 'PAID', 'RECONCILED'].includes(status)) {
+  if (['SUBMITTED', 'ACCEPTED', 'PROCESSING', 'PAID', 'RECONCILED'].includes(status)) {
     return 'green';
   }
-  if (['REJECTED', 'FAILED', 'CANCELLED', 'STOPPED', 'RETURNED', 'REVERSED', 'VOID'].includes(status)) {
+  if (
+    ['REJECTED', 'FAILED', 'CANCELLED', 'STOPPED', 'RETURNED', 'REVERSED', 'VOID', 'ESCHEATED']
+      .includes(status)
+  ) {
     return 'red';
   }
-  if (['DRAFT', 'PENDING_AUTHORITY'].includes(status)) return 'amber';
+  if (['DRAFT', 'PENDING_AUTHORITY', 'PARTIALLY_PAID'].includes(status)) return 'amber';
   return 'blue';
 }
 
-/** Success notice for a status write, calling out a terminal outcome. */
+/**
+ * Success notice for a status write, calling out a terminal outcome or an
+ * off-path exception so the operator knows which controls remain.
+ */
 function statusNotice(paymentNumber, status) {
-  const terminal = isTerminalStatus(status);
-  return `${paymentNumber} is now ${status}.`
-    + (terminal
-      ? ` ${terminalStatusLabel(status)}; this terminal status is off the execution happy path.`
-      : '');
+  if (isTerminalStatus(status)) {
+    return `${paymentNumber} is now ${status}.`
+      + ` ${terminalStatusLabel(status)}; this terminal status is off the execution happy path.`;
+  }
+  if (isOffPathStatus(status)) {
+    return `${paymentNumber} is now ${status}.`
+      + ` Status ${status} is off the execution happy path;`
+      + ' the post-payment controls stay available.';
+  }
+  return `${paymentNumber} is now ${status}.`;
 }
 
 /**
@@ -1418,9 +1430,9 @@ export default function App() {
                   <p className="eia-muted" style={{ marginTop: 0 }}>
                     The Payment API owns the full execution path. Every step below is one
                     PATCH /api/v1/payments/{'{id}'}/status with a target status, the payment's
-                    expectedVersion, and an optional reason. Mark paid, Reconcile, and the terminal
-                    cancel, void, and stop actions require confirmation before the write; void and
-                    stop also require a reason.
+                    expectedVersion, and an optional reason. Mark paid, Reconcile, and every
+                    secondary action require confirmation before the write; Return, Reverse,
+                    Escheat, Void, and Stop also require a reason.
                   </p>
                   <div className="eia-table-wrap">
                     <table className="eia-table">
@@ -1454,11 +1466,11 @@ export default function App() {
                   </div>
                   {currentIndex < 0 && (
                     <p className="eia-muted">
-                      Status {selected.status} is terminal and off the forward execution path; the
-                      forward lifecycle is closed.
+                      Status {selected.status} is {isTerminalStatus(selected.status)
+                        ? 'terminal and off the forward execution path; the forward lifecycle is closed.'
+                        : 'off the forward execution path; the post-payment controls can recover or close it.'}
                       {secondaryActions.length > 0
-                        ? ` The terminal ${secondaryActions.map((entry) => entry.label).join(' / ')}`
-                          + ' action is still available above.'
+                        ? ` Available: ${secondaryActions.map((entry) => entry.label).join(' / ')}.`
                         : ' No further lifecycle action is exposed.'}
                     </p>
                   )}
@@ -1474,7 +1486,7 @@ export default function App() {
                         {action
                           ? action.label
                           : secondaryActions.length > 0
-                            ? 'Terminal action available'
+                            ? 'Secondary action available'
                             : 'No action'}
                       </span>
                     </div>
@@ -1485,7 +1497,7 @@ export default function App() {
                           + `${action.confirm ? ', after confirmation' : ''}.`
                         : `No forward lifecycle action is exposed for status ${selected.status}.`}
                       {secondaryActions.length > 0
-                        ? ` Terminal actions: ${secondaryActions.map((entry) => (
+                        ? ` Secondary actions: ${secondaryActions.map((entry) => (
                           `${entry.label} → ${entry.to}${entry.reasonRequired ? ' (reason required)' : ' (reason optional)'}`
                         )).join('; ')}. Each is confirmed and sends one versioned PATCH.`
                         : ''}

@@ -8,6 +8,22 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 ### Added
 
+- Post-payment controls on the lifecycle action bar. `PAID` and
+  `PARTIALLY_PAID` offer **Return payment** (`RETURNED`) and **Reverse payment**
+  (`REVERSED`); `RECONCILED` offers **Escheat payment** (`ESCHEATED`); and
+  `RETURNED` offers **Reschedule** (`SCHEDULED`) plus **Cancel payment**
+  (`CANCELLED`). Return, Reverse, and Escheat require a reason; every secondary
+  action is confirmed and sends one `PATCH /api/v1/payments/{id}/status` with
+  `{ status, expectedVersion, reason? }`. The response updates the selected
+  record and its queue row. `PARTIALLY_PAID` and `RETURNED` show an explanatory
+  off-path note, `RETURNED` is recoverable rather than terminal, `REVERSED` and
+  `ESCHEATED` show their terminal outcome, and `PAID` and `RECONCILED` explain
+  the post-payment controls that remain. API errors stay in the dialog; a 409
+  reloads the authoritative record and retries with the current version.
+- Playwright coverage for the post-payment action mapping, versioned PATCH
+  payloads, the required reasons for Return/Reverse/Escheat, confirmation
+  dismissal, reschedule's optional reason, the off-path and terminal
+  explanations, and a 409 on Return with an authoritative reload and retry.
 - Secondary terminal actions on the payment lifecycle panel. `DRAFT`,
   `PENDING_AUTHORITY`, `AUTHORIZED`, and `SCHEDULED` offer **Cancel payment**
   (`CANCELLED`, optional reason) and **Void payment** (`VOID`, required

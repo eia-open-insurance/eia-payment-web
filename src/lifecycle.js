@@ -11,10 +11,10 @@
  *   DRAFT -> PENDING_AUTHORITY -> AUTHORIZED -> APPROVED -> SCHEDULED ->
  *   SUBMITTED -> ACCEPTED -> PROCESSING -> PAID -> RECONCILED
  *
- * FAILED, RETURNED, CANCELLED, VOID, and the other exception states are
- * terminal-ish: they are not on the happy path and the workbench exposes no
- * automatic next action for them. The only explicit controls there are the
- * secondary cancel/void/stop actions, and each of those is confirmed.
+ * FAILED, RETURNED, CANCELLED, VOID, and the other exception states are not on
+ * the happy path. RETURNED is recoverable via Reschedule; the other exception
+ * states are terminal. Post-payment controls (Return, Reverse, Escheat) move a
+ * settled payment off the happy path and always require confirmation.
  */
 
 /** Ordered happy-path steps, including the human label and transition text. */
@@ -33,6 +33,10 @@ export const EXECUTION_LIFECYCLE = [
 
 export const RECONCILED_STATUS = 'RECONCILED';
 export const PAID_STATUS = 'PAID';
+export const PARTIALLY_PAID_STATUS = 'PARTIALLY_PAID';
+export const RETURNED_STATUS = 'RETURNED';
+export const REVERSED_STATUS = 'REVERSED';
+export const ESCHEATED_STATUS = 'ESCHEATED';
 
 /**
  * The single next happy-path action per current status. `confirm` actions open
@@ -96,10 +100,13 @@ export const HAPPY_PATH_ACTIONS = {
   }
 };
 
-/** Exception states that end the forward happy path. */
+/**
+ * Exception states that end the forward happy path permanently. RETURNED is
+ * off-path but recoverable, so it is described as an exception rather than a
+ * terminal outcome: the API allows it to be rescheduled.
+ */
 export const TERMINAL_STATUSES = [
   'FAILED',
-  'RETURNED',
   'CANCELLED',
   'VOID',
   'REJECTED',
@@ -111,7 +118,6 @@ export const TERMINAL_STATUSES = [
 /** Human label for a terminal status, used by the panel and success notices. */
 export const TERMINAL_STATUS_LABELS = {
   FAILED: 'Payment failed',
-  RETURNED: 'Payment returned',
   CANCELLED: 'Payment cancelled',
   VOID: 'Payment voided',
   REJECTED: 'Payment rejected',
@@ -121,32 +127,65 @@ export const TERMINAL_STATUS_LABELS = {
 };
 
 /**
- * One secondary action descriptor. `kind` distinguishes it from the single
- * happy-path action so the dialog can require a reason and the UI can style it
- * as terminal without overloading `to`.
+ * One secondary action descriptor. `kind` separates the terminal exception
+ * actions from the recovery action that re-enters the happy path, so the panel
+ * can style and explain them differently without overloading `to`.
+ *
+ * `reasonRequired` marks the post-payment actions whose audit trail is
+ * mandatory: Return, Reverse, and Escheat. Every secondary action is still
+ * confirmed and sends one versioned PATCH.
  */
-function terminalAction(id, from, to) {
-  const label = `${id.charAt(0).toUpperCase()}${id.slice(1)} payment`;
+function secondaryAction(id, from, to, {
+  kind = 'terminal',
+  label,
+  reasonRequired = false,
+  danger
+} = {}) {
+  const defaultLabel = `${id.charAt(0).toUpperCase()}${id.slice(1)} payment`;
   return {
-    kind: 'terminal',
+    kind,
     id,
     from,
     to,
-    label,
+    label: label || defaultLabel,
     confirm: true,
-    reasonRequired: to === 'VOID' || to === 'STOPPED',
-    danger: to !== 'CANCELLED'
+    reasonRequired,
+    danger: danger !== undefined ? danger : kind === 'terminal' && to !== 'CANCELLED'
   };
 }
 
+function terminalAction(id, from, to, options = {}) {
+  return secondaryAction(id, from, to, {
+    ...options,
+    // Void and Stop keep their mandatory audit reason by default.
+    reasonRequired: options.reasonRequired !== undefined
+      ? options.reasonRequired
+      : to === 'VOID' || to === 'STOPPED'
+  });
+}
+
+function recoveryAction(id, from, to, options = {}) {
+  return secondaryAction(id, from, to, {
+    label: 'Reschedule',
+    ...options,
+    kind: 'recovery',
+    danger: false
+  });
+}
+
 /**
- * Secondary, terminal actions per current status. These move the payment off
- * the happy path, so every one is confirmed. A void or stop also records a
- * mandatory reason; a cancel reason is optional.
+ * Secondary actions per current status. These move the payment off the happy
+ * path (or, for Reschedule, bring it back), so every one is confirmed. Return,
+ * Reverse, and Escheat require a reason; Cancel and Reschedule accept an
+ * optional one.
  *
- * The mapping mirrors the Payment API transition graph: cancel is available
- * before scheduling and from the recoverable exception states, while APPROVED
- * offers void and stop instead of cancel.
+ * Post-payment controls mirror the Payment API transition graph:
+ *   PAID           -> RETURNED (bank return) | REVERSED (accounting reversal)
+ *   PARTIALLY_PAID -> RETURNED | REVERSED
+ *   RECONCILED     -> ESCHEATED (unclaimed funds)
+ *   RETURNED       -> SCHEDULED (reissue/reschedule) | CANCELLED
+ *
+ * Cancel, void, and stop remain available on the pre-execution statuses.
  */
 export const SECONDARY_ACTIONS = {
   DRAFT: [
@@ -169,7 +208,21 @@ export const SECONDARY_ACTIONS = {
     terminalAction('cancel', 'SCHEDULED', 'CANCELLED'),
     terminalAction('void', 'SCHEDULED', 'VOID')
   ],
-  RETURNED: [terminalAction('cancel', 'RETURNED', 'CANCELLED')],
+  PAID: [
+    terminalAction('return', 'PAID', 'RETURNED', { reasonRequired: true }),
+    terminalAction('reverse', 'PAID', 'REVERSED', { reasonRequired: true })
+  ],
+  PARTIALLY_PAID: [
+    terminalAction('return', 'PARTIALLY_PAID', 'RETURNED', { reasonRequired: true }),
+    terminalAction('reverse', 'PARTIALLY_PAID', 'REVERSED', { reasonRequired: true })
+  ],
+  RECONCILED: [
+    terminalAction('escheat', 'RECONCILED', 'ESCHEATED', { reasonRequired: true })
+  ],
+  RETURNED: [
+    recoveryAction('reschedule', 'RETURNED', 'SCHEDULED'),
+    terminalAction('cancel', 'RETURNED', 'CANCELLED')
+  ],
   FAILED: [terminalAction('cancel', 'FAILED', 'CANCELLED')]
 };
 
@@ -184,31 +237,42 @@ export function nextLifecycleAction(status) {
   return HAPPY_PATH_ACTIONS[status] || null;
 }
 
-/** Secondary terminal actions offered for a status; empty for other statuses. */
+/** Secondary actions offered for a status; empty for other statuses. */
 export function secondaryLifecycleActions(status) {
   return SECONDARY_ACTIONS[status] || [];
 }
 
-/** True when the action is one of the terminal cancel/void/stop actions. */
+/** True when the action moves the payment to a terminal exception status. */
 export function isTerminalAction(action) {
   return Boolean(action) && action.kind === 'terminal';
 }
 
-/** Void and stop require a reason; cancel does not. */
+/** True when the action re-enters the happy path, currently only Reschedule. */
+export function isRecoveryAction(action) {
+  return Boolean(action) && action.kind === 'recovery';
+}
+
+/** Return, Reverse, Escheat, Void, and Stop require a reason; others do not. */
 export function actionRequiresReason(action) {
   return Boolean(action && action.reasonRequired);
 }
 
 /**
- * Rejects a blank reason for void/stop. Returns '' when the action may proceed,
- * so the same guard serves the dialog and any direct caller.
+ * Rejects a blank reason for actions whose audit trail is mandatory. Returns ''
+ * when the action may proceed, so the same guard serves the dialog and any
+ * direct caller.
  */
 export function reasonValidationError(action, reason) {
   if (!actionRequiresReason(action)) return '';
   if (String(reason || '').trim()) return '';
-  return action.to === 'STOPPED'
-    ? 'A reason is required to stop a payment.'
-    : 'A reason is required to void a payment.';
+  const messages = {
+    RETURNED: 'A reason is required to return a payment.',
+    REVERSED: 'A reason is required to reverse a payment.',
+    ESCHEATED: 'A reason is required to escheat a payment.',
+    STOPPED: 'A reason is required to stop a payment.',
+    VOID: 'A reason is required to void a payment.'
+  };
+  return messages[action.to] || 'A reason is required for this payment action.';
 }
 
 /** Dialog copy for the optional/required reason field. */
@@ -217,12 +281,24 @@ export function reasonFieldCopy(action) {
     return { label: 'Reason (optional)', placeholder: '', hint: '' };
   }
   if (actionRequiresReason(action)) {
+    const placeholders = {
+      RETURNED: 'Explain why this payment is being returned',
+      REVERSED: 'Explain why this payment is being reversed',
+      ESCHEATED: 'Explain why this payment is being escheated',
+      STOPPED: 'Explain why this payment is being stopped',
+      VOID: 'Explain why this payment is being voided'
+    };
     return {
       label: 'Reason (required)',
-      placeholder: action.to === 'STOPPED'
-        ? 'Explain why this payment is being stopped'
-        : 'Explain why this payment is being voided',
+      placeholder: placeholders[action.to] || 'Explain why this payment action is needed',
       hint: 'Required for audit; up to 200 characters, recorded with the status change.'
+    };
+  }
+  if (isRecoveryAction(action)) {
+    return {
+      label: 'Reason (optional)',
+      placeholder: 'For example the corrected payment run or value date',
+      hint: 'Optional context, up to 200 characters, recorded with the status change.'
     };
   }
   if (action.to === PAID_STATUS) {
@@ -257,17 +333,47 @@ export function terminalStatusLabel(status) {
 }
 
 /**
- * The off-path note under the timeline. Terminal statuses also name their
- * terminal outcome so a cancelled, voided, or stopped payment is unmistakable.
+ * The off-path note under the timeline. Terminal statuses name their terminal
+ * outcome; the post-payment exception statuses explain the controls that stay
+ * available so a partial or returned payment is never a dead end.
  */
 export function offPathNote(status) {
+  if (status === PARTIALLY_PAID_STATUS) {
+    return 'Status PARTIALLY_PAID is not on the execution happy path: only part of the'
+      + ' instructed amount has settled. Return or Reverse the payment to close the instruction;'
+      + ' the payment record still owns its state.';
+  }
+  if (status === RETURNED_STATUS) {
+    return 'Status RETURNED is not on the execution happy path: the bank returned the funds.'
+      + ' The payment is recoverable — Reschedule re-enters the lifecycle at SCHEDULED, or'
+      + ' Cancel closes it at CANCELLED.';
+  }
   const label = terminalStatusLabel(status);
   if (label) {
     return `Status ${status} is terminal (${label.toLowerCase()}) and is not on the execution`
       + ' happy path; the forward lifecycle is closed. The payment record still owns its state.';
   }
   return `Status ${status} is not on the execution happy path; the workbench exposes no`
-    + ' automatic next action. The payment record still owns its state.';
+    + ' automatic forward action. The payment record still owns its state.';
+}
+
+/**
+ * Post-payment explanation for the statuses that keep controls after settlement.
+ * PAID and RECONCILED are on the happy path, so they need this note while the
+ * off-path statuses already carry an off-path note.
+ */
+export function postPaymentNote(status) {
+  if (status === PAID_STATUS) {
+    return 'Paid funds can still be returned by the bank or reversed for accounting.'
+      + ' Return and Reverse move the payment off the happy path, require a reason, and are'
+      + ' confirmed; Reconcile remains the forward step.';
+  }
+  if (status === RECONCILED_STATUS) {
+    return 'Reconciliation completes the forward lifecycle. If the payee cannot be located and'
+      + ' the funds are unclaimed, Escheat payment is still available; escheatment is terminal'
+      + ' and requires a reason.';
+  }
+  return '';
 }
 
 /** 0-based index on the happy path, or -1 for an off-path/terminal status. */
@@ -302,8 +408,8 @@ export function isOffPathStatus(status) {
 
 /**
  * The PATCH body. `status` and the payment's current `expectedVersion` are
- * always sent; `reason` is optional and omitted when blank so the API receives
- * the minimal payload for routine transitions.
+ * always sent; `reason` is omitted when blank so routine transitions send the
+ * minimal payload. Callers guard mandatory reasons with reasonValidationError.
  */
 export function statusChangePayload(payment, action, reason = '') {
   const payload = {
@@ -316,8 +422,8 @@ export function statusChangePayload(payment, action, reason = '') {
 }
 
 /**
- * Confirmation copy for the two money-committing transitions. Keeping it in
- * one place makes the dialog wording and tests agree.
+ * Confirmation copy for every action that writes a status. Keeping it in one
+ * place makes the dialog wording and tests agree.
  */
 export function confirmationCopy(action) {
   if (!action) return { title: '', description: '' };
@@ -349,6 +455,42 @@ export function confirmationCopy(action) {
           + ' A reason is required and recorded with the status change.'
       };
     }
+    if (action.to === RETURNED_STATUS) {
+      return {
+        title: 'Return payment?',
+        description:
+          'Confirming writes RETURNED with the payment version below. Returning records that the'
+          + ' bank sent the funds back; the payment leaves the happy path but stays recoverable.'
+          + ' It can be rescheduled or cancelled afterwards. A reason is required and recorded'
+          + ' with the status change.'
+      };
+    }
+    if (action.to === REVERSED_STATUS) {
+      return {
+        title: 'Reverse payment?',
+        description:
+          'Confirming writes REVERSED with the payment version below. Reversing is terminal:'
+          + ' the payment leaves the execution happy path and cannot be advanced further.'
+          + ' A reason is required and recorded with the status change.'
+      };
+    }
+    if (action.to === ESCHEATED_STATUS) {
+      return {
+        title: 'Escheat payment?',
+        description:
+          'Confirming writes ESCHEATED with the payment version below. Escheatment is terminal:'
+          + ' the unclaimed funds leave the payment lifecycle and cannot be advanced further.'
+          + ' A reason is required and recorded with the status change.'
+      };
+    }
+  }
+  if (isRecoveryAction(action)) {
+    return {
+      title: 'Reschedule payment?',
+      description:
+        'Confirming writes SCHEDULED with the payment version below. This re-enters the execution'
+        + ' happy path at Scheduled so the returned payment can be sent again; a reason is optional.'
+    };
   }
   if (action.to === PAID_STATUS) {
     return {
@@ -376,7 +518,9 @@ export function confirmationCopy(action) {
 export function executionLabel(status) {
   if (status === RECONCILED_STATUS) return 'Complete: paid and reconciled';
   if (status === PAID_STATUS) return 'Settled; awaiting reconciliation';
-  const terminal = terminalStatusLabel(status);
+  if (status === PARTIALLY_PAID_STATUS) return 'Partially settled; return or reverse available';
+  if (status === RETURNED_STATUS) return 'Returned; reschedule or cancel available';
+  const terminal = isTerminalStatus(status) ? terminalStatusLabel(status) : '';
   if (terminal) return `Terminal: ${terminal.toLowerCase()}`;
   if (['SUBMITTED', 'ACCEPTED', 'PROCESSING'].includes(status)) {
     return 'Issued to SAP/bank; awaiting settlement';

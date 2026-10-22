@@ -8,6 +8,7 @@ import {
   lifecycleStepState,
   nextLifecycleAction,
   offPathNote,
+  postPaymentNote,
   secondaryLifecycleActions,
   terminalStatusLabel
 } from './lifecycle.js';
@@ -24,8 +25,8 @@ const STATE_LABEL = {
  *
  * The panel is deliberately state-only: App owns the PATCH, conflict reload, and
  * confirmation dialog. At most one happy-path action and the status's secondary
- * terminal actions are rendered, so the workbench cannot accidentally skip a
- * step or issue two conflicting transitions from two controls.
+ * actions are rendered, so the workbench cannot accidentally skip a step or
+ * issue two conflicting transitions from two controls.
  */
 export default function PaymentLifecycle({ payment, busy, conflict, onAction, onReload }) {
   if (!payment) return null;
@@ -37,6 +38,7 @@ export default function PaymentLifecycle({ payment, busy, conflict, onAction, on
   const offPath = isOffPathStatus(payment.status);
   const terminal = isTerminalStatus(payment.status);
   const terminalLabel = terminalStatusLabel(payment.status);
+  const postPayment = postPaymentNote(payment.status);
 
   return (
     <section
@@ -76,7 +78,7 @@ export default function PaymentLifecycle({ payment, busy, conflict, onAction, on
             <div
               className="eia-lifecycle-secondary"
               role="group"
-              aria-label="Terminal payment actions"
+              aria-label="Secondary payment actions"
               data-testid="payment-secondary-actions"
             >
               {secondaryActions.map((entry) => (
@@ -86,6 +88,8 @@ export default function PaymentLifecycle({ payment, busy, conflict, onAction, on
                   className={entry.danger ? 'eia-btn-danger' : 'eia-btn-secondary'}
                   data-testid={`payment-secondary-action-${entry.id}`}
                   data-target={entry.to}
+                  data-kind={entry.kind}
+                  data-reason-required={entry.reasonRequired ? 'true' : 'false'}
                   onClick={() => onAction(entry)}
                   disabled={busy}
                   title={`${entry.label}: ${entry.from} → ${entry.to}`
@@ -137,11 +141,18 @@ export default function PaymentLifecycle({ payment, busy, conflict, onAction, on
         </p>
       )}
 
+      {postPayment && (
+        <p className="eia-lifecycle-post-payment" data-testid="lifecycle-post-payment">
+          {postPayment}
+        </p>
+      )}
+
       <p className="eia-lifecycle-context" data-testid="lifecycle-context">
         Payment owns execution. Claim and policy links are evidence of what is being paid; they
         never advance or control this lifecycle. Each action in the bar writes one status
-        transition through the Payment API using the payment&apos;s current version. Cancel, void,
-        and stop are terminal and always require confirmation; void and stop also require a reason.
+        transition through the Payment API using the payment&apos;s current version. Every
+        secondary action is confirmed and sends one versioned PATCH; Return, Reverse, and Escheat
+        also require a reason, while Reschedule and Cancel accept an optional one.
       </p>
 
       {conflict && (

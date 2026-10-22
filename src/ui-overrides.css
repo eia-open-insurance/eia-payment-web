@@ -398,6 +398,18 @@
   font-size: 11px;
 }
 
+/* Post-payment explanation for on-path statuses that keep controls. */
+.eia-lifecycle-post-payment {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  background: #eef5fb;
+  border: 1px solid #c9dcec;
+  border-left: 3px solid var(--eia-blue);
+  border-radius: 6px;
+  color: var(--eia-navy);
+  font-size: 11px;
+}
+
 .eia-lifecycle-context {
   margin: 12px 0 0;
   font-size: 11px;

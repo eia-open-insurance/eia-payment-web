@@ -53,15 +53,17 @@ and offers a manual reload.
 
 The timeline marks every step as done, current, or pending, and states that the
 payment owns execution: claim and policy links are evidence of what is being
-paid, not controllers of the status. `RECONCILED` completes the path; terminal
-exception states such as `FAILED`, `RETURNED`, `CANCELLED`, `STOPPED`, and
-`VOID` are off-path, show their terminal outcome and an off-path note, and
-expose no forward action.
+paid, not controllers of the status. `RECONCILED` completes the forward path but
+still offers escheatment. `PARTIALLY_PAID` and `RETURNED` are off-path exception
+states with an explanatory note and secondary controls; `RETURNED` is
+recoverable through **Reschedule**. Truly terminal states such as `FAILED`,
+`CANCELLED`, `STOPPED`, `VOID`, `REVERSED`, and `ESCHEATED` show their terminal
+outcome and an off-path note and expose no forward action.
 
-## Terminal actions
+## Secondary and post-payment actions
 
-The action bar also exposes the secondary, terminal actions the Payment API
-supports for the current status:
+The action bar also exposes the secondary actions the Payment API supports for
+the current status, including the post-payment controls:
 
 | Current status | Action | Target status | Reason |
 | --- | --- | --- | --- |
@@ -71,18 +73,24 @@ supports for the current status:
 | `APPROVED` | Stop payment | `STOPPED` | Required |
 | `SCHEDULED` | Cancel payment | `CANCELLED` | Optional |
 | `SCHEDULED` | Void payment | `VOID` | Required |
+| `PAID`, `PARTIALLY_PAID` | Return payment | `RETURNED` | Required |
+| `PAID`, `PARTIALLY_PAID` | Reverse payment | `REVERSED` | Required |
+| `RECONCILED` | Escheat payment | `ESCHEATED` | Required |
+| `RETURNED` | Reschedule | `SCHEDULED` | Optional |
 | `RETURNED`, `FAILED` | Cancel payment | `CANCELLED` | Optional |
 | Other statuses | none | — | — |
 
-Every terminal action opens a confirmation dialog naming the status change and
-the expected version. Void and stop refuse to submit a blank reason; cancel
-accepts an optional reason. A confirmed action sends one
-`PATCH /api/v1/payments/{id}/status` with
+Every secondary action opens a confirmation dialog naming the status change and
+the expected version. Return, Reverse, Escheat, Void, and Stop refuse to submit
+a blank reason; Reschedule and Cancel accept an optional reason. A confirmed
+action sends one `PATCH /api/v1/payments/{id}/status` with
 `{ status, expectedVersion: payment.version, reason? }`, updates the selected
 record and its queue row from the response, and moves the timeline to the new
-terminal status with an off-path note. A rejected transition stays in the
-dialog with the API problem; a 409 is contained in the lifecycle panel and
-reloads the authoritative record so the retry uses the current version.
+status with an off-path note. `PAID` and `RECONCILED` show a note explaining the
+post-payment controls that remain, including that an unclaimed reconciled
+payment can be escheated. A rejected transition stays in the dialog with the API
+problem; a 409 is contained in the lifecycle panel and reloads the
+authoritative record so the retry uses the current version.
 
 ## Payment allocations
 
